@@ -94,6 +94,16 @@ async function onHeadersReceived(d) {
   if (acao === '*') pushCorsSecret(d.tabId, 'CORS Wildcard', 'HIGH', '*', base, d.url);
   if (acao === 'null') pushCorsSecret(d.tabId, 'CORS Origin: null', 'MEDIUM', 'null', base, d.url);
   if (acac === 'true') pushCorsSecret(d.tabId, 'CORS Allow-Credentials: true', 'MEDIUM', 'true', base, d.url);
+
+  // Passive CORS observations feed the CORS pane (D3 fix — active origin-forging
+  // is impossible from a browser fetch, so misconfigs are flagged from real
+  // responses instead).
+  if (acao || acac) {
+    store.push(d.tabId, 'corsResults', {
+      url: d.url, origin: acao || '—', acao, acac: acac === 'true',
+      vulnerable: acao === '*' || acao === 'null', passive: true, timestamp: Date.now(),
+    }, { match: (x, n) => x.url === n.url && x.acao === n.acao });
+  }
 }
 
 function pushCorsSecret(tabId, name, risk, value, base, url) {

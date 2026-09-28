@@ -445,6 +445,10 @@ tr:hover .cbtn{opacity:1;}
         <span class="sb-dot"></span><span class="sb-label">GraphQL</span>
         <span class="sb-cnt" id="cnt-graphql">0</span>
       </div>
+      <div class="sb-item" id="tab-scanner" style="--ic:#ff7b72">
+        <span class="sb-dot"></span><span class="sb-label">Scanner</span>
+        <span class="sb-cnt" id="cnt-scanner">0</span>
+      </div>
     </div>
 
     <div class="sb-sep"></div>
@@ -462,6 +466,9 @@ tr:hover .cbtn{opacity:1;}
       <div class="sb-item" id="tab-api-docs" style="--ic:#60a5fa">
         <span class="sb-dot"></span><span class="sb-label">API Docs</span>
         <span class="sb-cnt" id="cnt-api-docs">0</span>
+      </div>
+      <div class="sb-item" id="tab-export" style="--ic:#f97316">
+        <span class="sb-dot"></span><span class="sb-label">Export</span>
       </div>
       <div class="sb-item" id="tab-custom-payloads" style="--ic:#fbbf24">
         <span class="sb-dot"></span><span class="sb-label">My Payloads</span>
@@ -667,7 +674,7 @@ tr:hover .cbtn{opacity:1;}
           <span class="fuzzer-label">🌐 CORS Tester</span>
           <button class="run-btn run-cors" id="runCorsBtn">🌐 Test CORS</button>
         </div>
-        <div class="empty" id="empty-cors"><div class="empty-icon">🌐</div><div>No CORS results yet</div><small>Tests endpoints with evil origin header</small></div>
+        <div class="empty" id="empty-cors"><div class="empty-icon">🌐</div><div>No CORS results yet</div><small>Passive: flags ACAO/ACAC observed in responses (browsers cannot forge the Origin header in fetch)</small></div>
         <table class="dtable" id="tbl-cors" style="display:none">
           <thead><tr><th>ENDPOINT</th><th>ACAO HEADER</th><th>ACAC</th><th>VERDICT</th><th>URL</th><th class="copy-cell"></th></tr></thead>
           <tbody id="body-cors"></tbody>
@@ -684,6 +691,56 @@ tr:hover .cbtn{opacity:1;}
         <table class="dtable" id="tbl-graphql" style="display:none">
           <thead><tr><th>ENDPOINT</th><th>STATUS</th><th>TYPE</th><th>NAME</th><th>FIELDS</th></tr></thead>
           <tbody id="body-graphql"></tbody>
+        </table>
+      </div>
+
+      <!-- SCANNER -->
+      <div class="tab-pane" id="pane-scanner">
+        <div class="fuzzer-ctrl">
+          <span class="fuzzer-label">💥 Scanner</span>
+          <select class="filter-sel" id="scanTypes">
+            <option value="all">All Vuln Types</option>
+            <option value="SQLi_ERROR">SQLi (Error)</option>
+            <option value="SQLi_BOOLEAN">SQLi (Boolean)</option>
+            <option value="SQLi_TIME">SQLi (Time)</option>
+            <option value="XSS">XSS (Reflected)</option>
+            <option value="LFI">LFI / Path Traversal</option>
+            <option value="RFI">RFI</option>
+            <option value="SSRF">SSRF</option>
+            <option value="SSTI">SSTI</option>
+            <option value="OS_CMD">OS Command Injection</option>
+            <option value="XXE">XXE</option>
+            <option value="OPEN_REDIRECT">Open Redirect</option>
+          </select>
+          <select class="filter-sel" id="scanTarget">
+            <option value="all">All In-Scope Params</option>
+            <option value="HIGH">HIGH Confidence Only</option>
+            <option value="url_parameter">URL Params Only</option>
+            <option value="post">POST/Body Params Only</option>
+          </select>
+          <span style="font-size:10px;color:var(--dim);">Delay:</span>
+          <input class="fuzzer-input" id="scanDelay" type="number" value="500" min="100" max="5000" style="width:56px">
+          <span style="font-size:10px;color:var(--dim);">Threads:</span>
+          <input class="fuzzer-input" id="scanThreads" type="number" value="2" min="1" max="8" style="width:44px">
+          <button class="run-btn run-fuzz" id="runScanBtn">▶ Start Scan</button>
+          <button class="run-btn" id="stopScanBtn" style="background:#ef444412;color:#ef4444;border-color:#ef444430;display:none;">■ Stop</button>
+        </div>
+        <div class="fuzzer-ctrl">
+          <span class="fuzzer-label">🪤 Canary</span>
+          <input class="fuzzer-input" id="scanCanary" placeholder="Blind XSS collector URL (optional — enables Blind XSS tests)" style="flex:1;min-width:200px;">
+        </div>
+        <div id="scanProgressWrap" style="display:none;padding:6px 10px;background:var(--bg2);border-bottom:1px solid var(--border);">
+          <div style="display:flex;gap:8px;font-size:10px;color:var(--mid);">
+            <span id="scanMsg" style="flex:1">Ready</span><span id="scanCount">0/0</span>
+          </div>
+          <div style="background:var(--bg1);border-radius:3px;height:4px;margin-top:4px;overflow:hidden;">
+            <div id="scanBar" style="height:100%;background:var(--accent);width:0%;transition:width .3s"></div>
+          </div>
+        </div>
+        <div class="empty" id="empty-scanner"><div class="empty-icon">💥</div><div>No confirmed vulnerabilities yet</div><small>Evidence-based tests only — findings require concrete proof vs baseline</small></div>
+        <table class="dtable" id="tbl-scanner" style="display:none">
+          <thead><tr><th>SEV</th><th>TYPE</th><th>PARAM</th><th>EVIDENCE</th><th>URL</th><th class="copy-cell"></th></tr></thead>
+          <tbody id="body-scanner"></tbody>
         </table>
       </div>
 
@@ -761,6 +818,52 @@ tr:hover .cbtn{opacity:1;}
         </table>
       </div>
 
+      <!-- EXPORT -->
+      <div class="tab-pane" id="pane-export">
+        <div class="fuzzer-ctrl">
+          <span class="fuzzer-label">📤 Export</span>
+          <span style="font-size:10px;color:var(--dim);">Recon data &amp; confirmed findings</span>
+        </div>
+        <div style="padding:12px;display:flex;flex-direction:column;gap:12px;overflow-y:auto;">
+          <div>
+            <div style="font-size:9px;color:var(--dim);font-weight:700;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:6px;">📋 Bug Report</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+              <button class="run-btn run-fuzz" data-export="markdown">📄 Markdown</button>
+              <button class="run-btn run-fuzz" data-export="json">🗂 JSON</button>
+              <button class="run-btn run-fuzz" data-export="csv">📊 CSV</button>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:9px;color:var(--dim);font-weight:700;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:6px;">🔧 Tool Integration</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+              <button class="run-btn run-idor" data-export="burp">Burp XML</button>
+              <button class="run-btn run-idor" data-export="sqlmap">SQLmap</button>
+              <button class="run-btn run-idor" data-export="ffuf">FFUF</button>
+              <button class="run-btn run-idor" data-export="nuclei">Nuclei</button>
+              <button class="run-btn run-idor" data-export="curl">cURL</button>
+              <button class="run-btn run-idor" data-export="urls">URLs</button>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:9px;color:var(--dim);font-weight:700;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:6px;">🎯 HIGH Confidence Only</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+              <button class="run-btn run-cors" data-export="high_sqlmap">SQLmap HIGH</button>
+              <button class="run-btn run-cors" data-export="high_ffuf">FFUF HIGH</button>
+              <button class="run-btn run-cors" data-export="high_json">JSON HIGH</button>
+              <button class="run-btn run-cors" data-export="high_markdown">Report HIGH</button>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:9px;color:var(--dim);font-weight:700;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:6px;">💥 Confirmed Vulnerabilities</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+              <button class="run-btn" data-export-scan="md" style="background:#ef444412;color:#ef4444;border-color:#ef444430;">📄 Report</button>
+              <button class="run-btn" data-export-scan="json" style="background:#ef444412;color:#ef4444;border-color:#ef444430;">🗂 JSON</button>
+              <button class="run-btn" data-export-scan="csv" style="background:#ef444412;color:#ef4444;border-color:#ef444430;">📊 CSV</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div><!-- /main -->
 
     <!-- PAYLOAD PANEL -->
@@ -788,6 +891,9 @@ tr:hover .cbtn{opacity:1;}
   </div><!-- /content-wrap -->
 </div><!-- /body-wrap -->
 
+<script src="../scanner/payloads.js"></script>
+<script src="../scanner/detect.js"></script>
+<script src="../scanner/scan.js"></script>
 <script src="popup.js"></script>
 </body>
 </html>

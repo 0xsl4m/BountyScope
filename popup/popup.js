@@ -1,8 +1,7 @@
 // ============================================================
-// ReconHawk Pro - Popup Logic v4.1
-// FIXED: Context-aware filters per tab, better search/highlight,
-//        scope enforcement in UI, WebSocket messages display,
-//        JWT security checks, POST body params
+// BountyScope - Popup Logic
+// Based on the ReconHawk popup logic, updated for BountyScope.
+// Scanner engine, export suite, fuzzer concurrency and passive CORS wired in.
 // ============================================================
 
 let currentTabId = null;
@@ -59,6 +58,8 @@ const TAB_FILTERS = {
   "websocket":       { search:true,  groups:[],                                  placeholder:"Search WebSocket URL..." },
   "jwt":             { search:false, groups:[],                                  placeholder:"" },
   "api-docs":        { search:true,  groups:[],                                  placeholder:"Search API doc URL..." },
+  "scanner":         { search:true,  groups:[],                                  placeholder:"Search severity, type, param, URL..." },
+  "export":          { search:false, groups:[],                                  placeholder:"" },
 };
 
 // ─── DOMContentLoaded ────────────────────────────────────────
@@ -107,8 +108,8 @@ function initEventListeners() {
 
     // Tabs
     ["params","endpoints","secrets","reflect","requests","headers",
-     "fuzzer","idor","cors","graphql","subdomains","custom-payloads",
-     "websocket","jwt","api-docs"].forEach(name => {
+     "fuzzer","idor","cors","graphql","scanner","subdomains","custom-payloads",
+     "websocket","jwt","api-docs","export"].forEach(name => {
       document.getElementById("tab-"+name)?.addEventListener("click", () => switchTab(name));
     });
 
@@ -145,6 +146,16 @@ function initEventListeners() {
     document.getElementById("clearCustomPayloadsBtn")?.addEventListener("click", clearCustomPayloads);
     document.getElementById("decodeJwtBtn")?.addEventListener("click", decodeJWT);
     document.getElementById("scanApiDocsBtn")?.addEventListener("click", scanApiDocs);
+    document.getElementById("runScanBtn")?.addEventListener("click", startActiveScan);
+    document.getElementById("stopScanBtn")?.addEventListener("click", () => { stopActiveScan(); setStatus("Scan stopping…"); });
+
+    // Export actions (delegated — buttons live in static HTML)
+    document.addEventListener("click", e => {
+      const exp = e.target.closest("[data-export]");
+      if (exp) { exportFmt(exp.getAttribute("data-export")); return; }
+      const exps = e.target.closest("[data-export-scan]");
+      if (exps) { exportScanResults(exps.getAttribute("data-export-scan")); return; }
+    });
 
     // Global URL click
     document.addEventListener("click", e => {
@@ -172,6 +183,7 @@ async function initExtension() {
       } catch(_) {}
     }
     await loadCustomPayloads();
+    await loadSettings();
     await loadData();
     updateFilterToolbar(); // Set correct filters for default tab
     startAutoRefresh();
@@ -480,7 +492,8 @@ function renderActive() {
     params:renderParams, endpoints:renderEndpoints, secrets:renderSecrets, reflect:renderReflect,
     requests:renderRequests, headers:renderHeaders, fuzzer:renderFuzzer, idor:renderIdor,
     cors:renderCors, graphql:renderGraphQL, subdomains:renderSubdomains,
-    "custom-payloads":renderCustomPayloads, websocket:renderWebSocket, jwt:renderJWT, "api-docs":renderApiDocs
+    "custom-payloads":renderCustomPayloads, websocket:renderWebSocket, jwt:renderJWT, "api-docs":renderApiDocs,
+    scanner:renderScanner
   };
   renderers[activePane]?.();
 }
@@ -520,6 +533,7 @@ function updateCounts() {
     "websocket":       (allData.websocketConnections||[]).length,
     "jwt":             (allData.jwtTokens||[]).length,
     "api-docs":        (allData.apiDocs||[]).length,
+    "scanner":         (allData.scanResults||[]).length,
   };
 
   // Critical findings for sidebar alert animation
@@ -936,7 +950,7 @@ function renderApiDocs() {
 
 // ─── Auto Test ───────────────────────────────────────────────
 async function startAutoTest() {
-  if (!allData.target?.host && !allData.target?.noFilter) { openModal(); setStatus("Set target first"); return; }
+  if (!allData.target?.host) { openModal(); setStatus("Active testing needs an Exact/Wildcard target (No-Filter is passive-only)"); return; }
   const highParams=allData.params.filter(p=>paramRisk(p.key)==="HIGH"&&p.url);
   if (!highParams.length) { setStatus("No HIGH risk params. Scan first."); return; }
   const btn=document.getElementById("autoTestBtn");
@@ -966,9 +980,9 @@ async function startAutoTest() {
 
 // ─── Fuzzer ──────────────────────────────────────────────────
 async function startFuzzer() {
-  if (!allData.target?.host && !allData.target?.noFilter) { openModal(); setStatus("Set target first"); return; }
-  const params=allData.params.filter(p=>p.url);
-  if (!params.length) { setStatus("No params to fuzz. Scan first."); return; }
+  if (!allData.target?.host) { openModal(); setStatus("Active testing needs an Exact/Wildcard target (No-Filter is passive-only)"); return; }
+  const params=scopeFilterParams(allData.params.filter(p=>p.url));
+  if (!params.length) { setStatus("No in-scope params to fuzz. Scan first."); return; }
   fuzzStop=false;
   const btn=document.getElementById("runFuzzBtn"), stopBtn=document.getElementById("stopFuzzBtn");
   btn.disabled=true; btn.classList.add("running"); btn.textContent="⚡ Fuzzing...";
@@ -990,34 +1004,46 @@ async function startFuzzer() {
     } catch(_) {}
   }
 
+  // Build the job list, then run it with N parallel workers
+  // (fuzzThreads is now actually wired up)
+  const jobs=[];
   for (const param of deduped.slice(0,20)) {
-    if (fuzzStop) break;
     for (const type of types) {
       const payloadList=[...(PAYLOADS[type]||[]).slice(0,5)];
       // Add custom payloads of same type
       const custom=(allData.customPayloads||[]).filter(cp=>cp.type===type).map(cp=>cp.payload);
       payloadList.push(...custom.slice(0,3));
-      for (const payload of payloadList) {
-        if (fuzzStop) break;
-        try {
-          const testUrl=new URL(param.url);
-          testUrl.searchParams.set(param.key,payload);
-          setStatus(`[${++count}] ${type} → ${param.key}: ${payload.substring(0,30)}`);
-          const resp=await fetch(testUrl.href,{signal:AbortSignal.timeout(5000),credentials:"include"});
-          const body=await resp.text();
-          const base=baselines[param.url]||{status:200,size:0};
-          const sizeDelta=body.length-base.size;
-          const statusChanged=resp.status!==base.status;
-          const reflected=body.toLowerCase().includes(payload.substring(0,8).toLowerCase());
-          const interesting=reflected||statusChanged||(Math.abs(sizeDelta)>500);
-          await chrome.runtime.sendMessage({ type:"ADD_FUZZ_RESULT", tabId:currentTabId,
-            result:{param:param.key,type:type.toUpperCase(),payload,status:resp.status,sizeDelta,reflected,interesting,url:testUrl.href,timestamp:Date.now()} });
-          if (interesting) setStatus("⚠️ INTERESTING: "+param.key+" ["+type.toUpperCase()+"]");
-        } catch(_) {}
-        await sleep(delay);
-      }
+      for (const payload of payloadList) jobs.push({param,type,payload});
     }
   }
+  const totalJobs=jobs.length;
+  let jobIdx=0;
+  async function fuzzWorker() {
+    while (!fuzzStop) {
+      const i=jobIdx++;
+      if (i>=totalJobs) return;
+      const {param,type,payload}=jobs[i];
+      try {
+        const testUrl=new URL(param.url);
+        testUrl.searchParams.set(param.key,payload);
+        setStatus(`[${i+1}/${totalJobs}] ${type} → ${param.key}: ${payload.substring(0,30)}`);
+        const resp=await fetch(testUrl.href,{signal:AbortSignal.timeout(5000),credentials:"include"});
+        const body=await resp.text();
+        const base=baselines[param.url]||{status:200,size:0};
+        const sizeDelta=body.length-base.size;
+        const statusChanged=resp.status!==base.status;
+        const reflected=body.toLowerCase().includes(payload.substring(0,8).toLowerCase());
+        const interesting=reflected||statusChanged||(Math.abs(sizeDelta)>500);
+        await chrome.runtime.sendMessage({ type:"ADD_FUZZ_RESULT", tabId:currentTabId,
+          result:{param:param.key,type:type.toUpperCase(),payload,status:resp.status,sizeDelta,reflected,interesting,url:testUrl.href,timestamp:Date.now()} });
+        if (interesting) setStatus("⚠️ INTERESTING: "+param.key+" ["+type.toUpperCase()+"]");
+      } catch(_) {}
+      await sleep(delay);
+    }
+  }
+  const fuzzThreadsVal=Math.min(Math.max(parseInt(document.getElementById("fuzzThreads")?.value)||3,1),10);
+  await Promise.all(Array.from({length:fuzzThreadsVal},()=>fuzzWorker()));
+  count=totalJobs;
 
   await loadData();
   btn.disabled=false; btn.classList.remove("running"); btn.textContent="⚡ Start Fuzzing";
@@ -1028,10 +1054,10 @@ async function startFuzzer() {
 
 // ─── IDOR ────────────────────────────────────────────────────
 async function startIdorScan() {
-  if (!allData.target?.host && !allData.target?.noFilter) { openModal(); setStatus("Set target first"); return; }
+  if (!allData.target?.host) { openModal(); setStatus("Active testing needs an Exact/Wildcard target (No-Filter is passive-only)"); return; }
   const idorParams=allData.params.filter(p=>{
     const k=(p.key||"").toLowerCase();
-    return p.url && /\b(id|uid|user_?id|account_?id|post_?id|item_?id|order_?id|product_?id|doc_?id|record_?id)\b/.test(k) && /^\d+$/.test((p.value||"").trim());
+    return p.url && isUrlInScope(p.url) && /\b(id|uid|user_?id|account_?id|post_?id|item_?id|order_?id|product_?id|doc_?id|record_?id)\b/.test(k) && /^\d+$/.test((p.value||"").trim());
   });
   if (!idorParams.length) { setStatus("No numeric ID params found."); return; }
   const btn=document.getElementById("runIdorBtn");
@@ -1071,41 +1097,19 @@ async function startIdorScan() {
 }
 
 // ─── CORS ────────────────────────────────────────────────────
+// CORS is passive-only (D3 fix): browsers forbid forging the Origin header in
+// fetch, so the old "evil origin" probe silently sent the extension's own origin
+// and always reported SAFE. Misconfigurations are flagged from observed response
+// headers by the background instead.
 async function startCorsTester() {
-  if (!allData.target?.host && !allData.target?.noFilter) { openModal(); setStatus("Set target first"); return; }
-  const endpoints=[...new Set(
-    allData.endpoints.filter(e=>e.url&&e.url.startsWith("http")).map(e=>e.url)
-    .concat(allData.requests.filter(r=>r.url&&r.url.startsWith("http")).map(r=>r.url))
-  )].slice(0,30);
-  if (!endpoints.length) { setStatus("No endpoints to test. Scan first."); return; }
-  const btn=document.getElementById("runCorsBtn");
-  btn.disabled=true; btn.classList.add("running"); btn.textContent="🌐 Testing...";
-  const evilOrigins=["https://evil.com","https://attacker.com","null"];
-  for (const url of endpoints) {
-    for (const origin of evilOrigins) {
-      try {
-        setStatus("CORS: "+shortUrl(url)+" ← "+origin);
-        const resp=await fetch(url,{method:"GET",credentials:"include",headers:{"Origin":origin},signal:AbortSignal.timeout(5000)});
-        const acao=resp.headers.get("access-control-allow-origin")||"";
-        const acac=resp.headers.get("access-control-allow-credentials")||"";
-        const vulnerable=(acao==="*")||(acao===origin&&acac.toLowerCase()==="true")||(acao==="null"&&origin==="null");
-        await chrome.runtime.sendMessage({ type:"ADD_CORS_RESULT", tabId:currentTabId,
-          result:{url,origin,acao,acac:acac.toLowerCase()==="true",vulnerable,timestamp:Date.now()} });
-        if (vulnerable) { setStatus("⚠️ CORS VULN: "+url); break; }
-      } catch(_) {}
-      await sleep(150);
-    }
-  }
   await loadData();
-  btn.disabled=false; btn.classList.remove("running"); btn.textContent="🌐 Test CORS";
-  const vulns=allData.corsResults.filter(r=>r.vulnerable).length;
-  setStatus(`✓ CORS done — ${vulns} vulnerable`);
   switchTab("cors");
+  setStatus("CORS: passive results only (ACAO/ACAC observed in responses). Active origin-forging needs a proxy, not a browser fetch.");
 }
 
 // ─── GraphQL ─────────────────────────────────────────────────
 async function startGraphQL() {
-  if (!allData.target?.host && !allData.target?.noFilter) { openModal(); setStatus("Set target first"); return; }
+  if (!allData.target?.host) { openModal(); setStatus("Active testing needs an Exact/Wildcard target (No-Filter is passive-only)"); return; }
   const btn=document.getElementById("runGqlBtn");
   btn.disabled=true; btn.classList.add("running"); btn.textContent="◈ Probing...";
   const candidateUrls=new Set();
@@ -1193,7 +1197,7 @@ function decodeJWT() {
 
 // ─── API Docs ─────────────────────────────────────────────────
 async function scanApiDocs() {
-  if (!allData.target?.host && !allData.target?.noFilter) { openModal(); setStatus("Set target first"); return; }
+  if (!allData.target?.host) { openModal(); setStatus("Active testing needs an Exact/Wildcard target (No-Filter is passive-only)"); return; }
   const btn=document.getElementById("scanApiDocsBtn");
   btn.disabled=true; btn.classList.add("running"); btn.textContent="🔍 Scanning...";
   setStatus("Scanning for API docs...");
@@ -1346,4 +1350,275 @@ function maskSecret(val) {
   const s=String(val||"");
   if (s.length<=8) return "●".repeat(s.length);
   return s.substring(0,4)+"●".repeat(Math.min(s.length-8,20))+s.slice(-4);
+}
+
+// ─── Settings ────────────────────────────────────────────────────────────────
+async function loadSettings() {
+  try {
+    const r = await chrome.runtime.sendMessage({ type:"GET_SETTINGS" });
+    if (r?.settings?.blindXssUrl) {
+      const el = document.getElementById("scanCanary");
+      if (el) el.value = r.settings.blindXssUrl;
+    }
+  } catch(_) {}
+}
+
+function saveCanary() {
+  const el = document.getElementById("scanCanary");
+  if (!el) return Promise.resolve();
+  return chrome.runtime.sendMessage({ type:"SET_SETTINGS", settings:{ blindXssUrl: el.value.trim() } }).catch(()=>{});
+}
+
+// ─── Scope helpers (client-side gate for active testing) ─────────────────────
+function isUrlInScope(url) {
+  const t = allData.target;
+  if (!t || !t.host) return false;
+  try {
+    const hn = new URL(url).hostname.toLowerCase();
+    const th = t.host.toLowerCase().replace(/^\*\./,"");
+    if (t.wildcard) return hn===th || hn.endsWith("."+th);
+    return hn===th;
+  } catch(_) { return false; }
+}
+function scopeFilterParams(list) { return list.filter(p => p.url && isUrlInScope(p.url)); }
+
+// ─── Active scanner (engine lives in scanner/scan.js) ────────────────────────
+async function startActiveScan() {
+  if (!allData.target?.host) { openModal(); setStatus("Active scan needs an Exact/Wildcard target (No-Filter is passive-only)"); return; }
+  const targetSel = document.getElementById("scanTarget")?.value || "all";
+  let toScan = scopeFilterParams((allData.params||[]).filter(p=>p.url));
+  if (targetSel==="HIGH") toScan = toScan.filter(p=>p.confidence==="HIGH");
+  else if (targetSel==="url_parameter") toScan = toScan.filter(p=>p.source==="url_parameter");
+  else if (targetSel==="post") toScan = toScan.filter(p=>/post|form|json|xml|graphql|xhr/i.test(p.source||""));
+  const seen=new Set();
+  toScan = toScan.filter(p=>{ const k=p.key+"|"+p.url; if(seen.has(k)) return false; seen.add(k); return true; }).slice(0,50);
+  if (!toScan.length) { setStatus("No in-scope params to scan — browse the target first"); return; }
+
+  const typesSel = document.getElementById("scanTypes")?.value || "all";
+  const allTypes = ["SQLi_ERROR","SQLi_BOOLEAN","SQLi_TIME","XSS","LFI","RFI","SSRF","SSTI","OS_CMD","XXE","OPEN_REDIRECT"];
+  const types = typesSel==="all" ? allTypes : [typesSel];
+  const canary = (document.getElementById("scanCanary")?.value || "").trim();
+  if (canary) await saveCanary();
+  const delay = Math.max(parseInt(document.getElementById("scanDelay")?.value)||500, 100);
+  const concurrency = Math.min(Math.max(parseInt(document.getElementById("scanThreads")?.value)||2,1),8);
+  const nTests = toScan.length * types.reduce((a,t)=>a+(BS_PAYLOADS[t]?.length||0),0);
+
+  if (!confirm("Active scan → "+(allData.target.wildcard?"*."+allData.target.host:allData.target.host)+
+    "\n"+toScan.length+" params, ~"+nTests+" requests.\n\nOnly run this against targets you are authorized to test.")) return;
+
+  const btn=document.getElementById("runScanBtn"), stopBtn=document.getElementById("stopScanBtn");
+  btn.disabled=true; btn.classList.add("running");
+  stopBtn.style.display="flex";
+  const wrap=document.getElementById("scanProgressWrap"); if (wrap) wrap.style.display="block";
+  setStatus("Active scan started…");
+
+  await runActiveScan(toScan, { types, delay, timeout:9000, concurrency, canary, smartMode: typesSel==="all" }, {
+    onProgress(info) {
+      const pct = info.total ? Math.round((info.done/info.total)*100) : 0;
+      const bar=document.getElementById("scanBar"); if (bar) bar.style.width=pct+"%";
+      const msg=document.getElementById("scanMsg"); if (msg) msg.textContent=info.message||"Scanning…";
+      const cnt=document.getElementById("scanCount"); if (cnt) cnt.textContent=info.done+"/"+info.total;
+    },
+    onResult(finding) {
+      (allData.scanResults = allData.scanResults||[]).push(finding);
+      chrome.runtime.sendMessage({ type:"ADD_SCAN_RESULT", tabId:currentTabId, result:finding }).catch(()=>{});
+      renderScanner(); updateCounts();
+      setStatus("⚠ CONFIRMED: "+finding.type+" on "+finding.param);
+    },
+    onDone(info) {
+      btn.disabled=false; btn.classList.remove("running");
+      stopBtn.style.display="none";
+      const bar=document.getElementById("scanBar");
+      if (bar) { bar.style.width="100%"; setTimeout(()=>{ bar.style.width="0%"; },800); }
+      const msg=document.getElementById("scanMsg"); if (msg) msg.textContent="Scan complete";
+      setStatus("✓ Scan done — "+info.results.length+" confirmed finding(s) out of "+info.done+" tests");
+      loadData();
+    },
+  });
+}
+
+function renderScanner() {
+  const q=getSearch();
+  let items=allData.scanResults||[];
+  if(q) items=items.filter(r=>((r.param||"")+(r.type||"")+(r.url||"")).toLowerCase().includes(q));
+  showTable("scanner",items.length>0); if(!items.length) return;
+  const sevBadge=s=>s==="CRITICAL"?"b-critical":s==="HIGH"?"b-high":s==="MEDIUM"?"b-medium":"b-low";
+  document.getElementById("body-scanner").innerHTML=items.slice().reverse().map(r=>`<tr>
+    <td><span class="badge ${sevBadge(r.severity)}">${esc(r.severity||"")}</span></td>
+    <td class="accent">${esc((r.type||"").replace(/_/g," "))}</td>
+    <td>${esc(r.param||"")}</td>
+    <td class="dim" style="max-width:260px" title="${escAttr(r.evidence||"")}">${esc((r.evidence||"").substring(0,90))}</td>
+    <td><span class="url-link" data-url="${escAttr(r.url||"")}" title="${escAttr(r.url||"")}">${highlight(shortUrl(r.url),q)}</span></td>
+    <td class="copy-cell"><button class="cbtn" data-copy="${escAttr((r.url||"")+" ["+(r.type||"")+"] "+(r.evidence||""))}">copy</button></td>
+  </tr>`).join("");
+  attachCopy("body-scanner");
+}
+
+// ─── Export suite (ported from ReconSpider; direct blob downloads) ───────────
+function downloadText(filename, content, mime) {
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([content],{type:mime||"text/plain;charset=utf-8"}));
+  a.download=filename; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+  setStatus("✓ Saved "+filename);
+}
+
+function buildExportContent(fmt) {
+  const params      = allData.params         || [];
+  const endpoints   = allData.endpoints      || [];
+  const secrets     = allData.secrets        || [];
+  const reflections = allData.payloadResults || [];
+  const highParams  = params.filter(p => p.confidence === 'HIGH');
+  const useParams   = fmt.startsWith('high_') ? highParams : params;
+  const base        = fmt.replace('high_', '');
+  let content = '', filename = '', mime = 'text/plain';
+
+  if (base === 'json') {
+    content  = JSON.stringify(fmt.startsWith('high_')
+      ? { target: allData.target, params: highParams, endpoints, secrets, reflections }
+      : { tool: "BountyScope v1.0", target: allData.target, timestamp: new Date().toISOString(), params, endpoints, secrets, reflections },
+      null, 2);
+    filename = 'bountyscope.json'; mime = 'application/json';
+
+  } else if (base === 'markdown') {
+    const hs = secrets.filter(s => s.severity==='CRITICAL'||s.severity==='HIGH'||s.risk==='CRITICAL'||s.risk==='HIGH');
+    const L = [];
+    L.push('# BountyScope — Bug Bounty Report');
+    L.push('Date: ' + new Date().toISOString());
+    L.push('Target: ' + (allData.target ? (allData.target.wildcard ? '*.'+allData.target.host : allData.target.host || 'all') : 'unscoped'));
+    L.push('');
+    L.push('## Summary');
+    L.push('| Metric | Count |');
+    L.push('|--------|-------|');
+    L.push('| Params | ' + params.length + ' |');
+    L.push('| HIGH confidence | ' + highParams.length + ' |');
+    L.push('| Endpoints | ' + endpoints.length + ' |');
+    L.push('| Secrets | ' + secrets.length + ' |');
+    L.push('| Payload results | ' + reflections.length + ' |');
+    L.push('| Confirmed vulns | ' + (allData.scanResults||[]).length + ' |');
+    if (hs.length) {
+      L.push(''); L.push('## Secrets');
+      hs.forEach(s => { L.push('### '+(s.name||s.category)+' ['+(s.severity||s.risk)+']'); L.push('Value: '+String(s.value||'').slice(0,150)); L.push('URL: '+(s.url||s.source||'')); L.push(''); });
+    }
+    L.push(''); L.push('## Parameters');
+    L.push('| Name | Value | Source | Confidence | Types | URL |');
+    L.push('|------|-------|--------|------------|-------|-----|');
+    useParams.forEach(p => L.push('| '+p.name+' | '+String(p.value||'').slice(0,40)+' | '+p.source+' | '+p.confidence+' | '+(p.injectionTypes||[]).join(',')+' | '+(p.url||'').split('?')[0].slice(0,70)+' |'));
+    L.push(''); L.push('## Endpoints');
+    endpoints.slice(0,200).forEach(e => L.push((e.method||'GET')+' '+(e.url||e.path||'')+' ['+(e.type||'Web')+']'));
+    content = L.join('\n'); filename = 'bountyscope-report.md'; mime = 'text/markdown';
+
+  } else if (base === 'csv') {
+    const rows = ['Name,Value,Source,URL,Method,Confidence,Score,InjectionTypes'];
+    useParams.forEach(p => rows.push(['"'+(p.name||'').replace(/"/g,'""')+'"','"'+String(p.value||'').slice(0,100).replace(/"/g,'""').replace(/\n/g,' ')+'"','"'+(p.source||'')+'"','"'+(p.url||'').replace(/"/g,'""')+'"','"'+(p.method||'GET')+'"','"'+(p.confidence||'')+'"','"'+(p.score||0)+'"','"'+(p.injectionTypes||[]).join('|')+'"'].join(',')));
+    content = rows.join('\n'); filename = 'bountyscope-params.csv'; mime = 'text/csv';
+
+  } else if (base === 'burp') {
+    const parts = ['<?xml version="1.0"?>','<items burpVersion="2024.1">'];
+    useParams.filter(p=>['url_parameter','post_json','post_form','graphql'].includes(p.source)).slice(0,200).forEach(p => {
+      try {
+        const isPost = ['post_json','post_form','graphql'].includes(p.source);
+        const ub = isPost ? (new URL(p.url).origin+new URL(p.url).pathname) : (p.url||'');
+        const body = isPost ? (p.name+'='+(p.value||'')) : '';
+        const raw = (isPost?'POST':'GET')+' '+ub.replace(/https?:\/\/[^/]+/,'')+' HTTP/1.1\r\nHost: '+new URL(ub).hostname+'\r\nUser-Agent: Mozilla/5.0\r\n\r\n'+body;
+        const b64 = btoa(unescape(encodeURIComponent(raw)));
+        parts.push('<item><host>'+new URL(ub).hostname+'</host><port>443</port><protocol>https</protocol><request base64="true">'+b64+'</request></item>');
+      } catch(_) {}
+    });
+    parts.push('</items>'); content = parts.join('\n'); filename = 'bountyscope-burp.xml'; mime = 'application/xml';
+
+  } else if (base === 'sqlmap') {
+    const cmds = [];
+    useParams.filter(p=>(p.injectionTypes||[]).includes('SQLi')).forEach(p => {
+      try {
+        if (['post_json','post_form','graphql'].includes(p.source)) cmds.push('sqlmap -u "'+p.url+'" --data="'+p.name+'='+(p.value||'')+'" -p "'+p.name+'" --level=3 --risk=2 --batch --random-agent --dbs');
+        else { const u=new URL(p.url); u.searchParams.set(p.name,'*'); cmds.push('sqlmap -u "'+u.href+'" -p "'+p.name+'" --level=3 --risk=2 --batch --random-agent --dbs'); }
+      } catch(_) {}
+    });
+    content = cmds.join('\n'); filename = 'bountyscope-sqlmap.sh';
+
+  } else if (base === 'ffuf') {
+    content = '# Endpoints\n'+[...new Set(endpoints.map(e=>(e.url||e.path||'').split('?')[0]))].join('\n')+'\n\n# Param Names\n'+[...new Set(useParams.map(p=>p.name||''))].filter(Boolean).join('\n');
+    filename = 'bountyscope-ffuf.txt';
+
+  } else if (base === 'nuclei') {
+    content = [...new Set(endpoints.map(e=>(e.url||e.path||'').split('?')[0]))].join('\n');
+    filename = 'bountyscope-nuclei.txt';
+
+  } else if (base === 'curl') {
+    content = endpoints.slice(0,200).map(e=>"curl -X "+(e.method||'GET')+" '"+(e.url||e.path||'')+"' -H 'User-Agent: Mozilla/5.0'").join('\n');
+    filename = 'bountyscope-curl.sh';
+
+  } else if (base === 'urls') {
+    content = [...new Set(endpoints.map(e=>e.url||e.path||''))].join('\n');
+    filename = 'bountyscope-urls.txt';
+
+  } else { return null; }
+  return {content, filename, mime};
+}
+
+function exportFmt(fmt) {
+  const params=allData.params||[], endpoints=allData.endpoints||[], secrets=allData.secrets||[];
+  if (!params.length && !endpoints.length && !secrets.length) { setStatus("No data — browse the target first!"); return; }
+  let result;
+  try { result = buildExportContent(fmt); } catch(e) { setStatus("Export error: "+e.message); return; }
+  if (!result) { setStatus("Unknown format"); return; }
+  if (!result.content) { setStatus("Nothing to export"); return; }
+  downloadText(result.filename, result.content, result.mime);
+}
+
+function exportScanResults(fmt) {
+  const rs = allData.scanResults || [];
+  if (!rs.length) { setStatus("No confirmed vulns — run a scan first!"); return; }
+  let content = '', filename = '', mime = 'text/plain';
+
+  if (fmt === 'json') {
+    content = JSON.stringify(rs, null, 2);
+    filename = 'bountyscope-confirmed-vulns.json'; mime = 'application/json';
+
+  } else if (fmt === 'csv') {
+    const rows = ['Severity,Type,Param,Method,URL,Payload,Evidence,DetectionType,ExploitHint'];
+    rs.forEach(r => {
+      rows.push([
+        '"'+r.severity+'"','"'+r.type+'"','"'+(r.param||'').replace(/"/g,'""')+'"','"'+(r.method||'GET')+'"',
+        '"'+(r.url||'').replace(/"/g,'""')+'"','"'+(r.payload||'').replace(/"/g,'""').slice(0,200)+'"',
+        '"'+(r.evidence||'').replace(/"/g,'""').replace(/\n/g,' ').slice(0,300)+'"',
+        '"'+(r.detectionType||'')+'"','"'+(r.exploitHint||'').replace(/"/g,'""').slice(0,300)+'"',
+      ].join(','));
+    });
+    content = rows.join('\n'); filename = 'bountyscope-confirmed-vulns.csv'; mime = 'text/csv';
+
+  } else {
+    const L = [];
+    L.push('# BountyScope — Confirmed Vulnerabilities');
+    L.push('**Date:** '+new Date().toISOString());
+    L.push('**Target:** '+(allData.target ? (allData.target.wildcard ? '*.'+allData.target.host : allData.target.host) : 'unscoped'));
+    L.push('**Total Confirmed:** '+rs.length);
+    L.push('');
+    L.push('## Summary');
+    L.push('| Severity | Count |');
+    L.push('|----------|-------|');
+    L.push('| CRITICAL | '+rs.filter(r=>r.severity==='CRITICAL').length+' |');
+    L.push('| HIGH | '+rs.filter(r=>r.severity==='HIGH').length+' |');
+    L.push('| MEDIUM | '+rs.filter(r=>r.severity==='MEDIUM').length+' |');
+    L.push('');
+    ['CRITICAL','HIGH','MEDIUM'].forEach(sev => {
+      const list = rs.filter(r=>r.severity===sev);
+      if (!list.length) return;
+      L.push('## '+sev+' Findings ('+list.length+')');
+      list.forEach((r,i) => {
+        L.push('### '+(i+1)+'. ['+r.type+'] Parameter: `'+r.param+'`');
+        L.push('- **Severity:** '+r.severity);
+        L.push('- **URL:** `'+r.url+'`');
+        L.push('- **Method:** '+(r.method||'GET'));
+        L.push('- **Payload:** `'+String(r.payload||'').slice(0,200)+'`');
+        L.push('- **Evidence:** `'+String(r.evidence||'').slice(0,300)+'`');
+        L.push('- **Detection:** '+(r.detectionType||''));
+        if (r.exploitHint) L.push('- **Exploit:** `'+r.exploitHint.slice(0,300)+'`');
+        L.push('');
+      });
+    });
+    content = L.join('\n'); filename = 'bountyscope-confirmed-vulns.md'; mime = 'text/markdown';
+  }
+  downloadText(filename, content, mime);
 }

@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ReconHawk Pro</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+:root{
+  --bg0:#080b10;--bg1:#0d1117;--bg2:#161b24;--bg3:#1e2530;
+  --border:#252d3a;--accent:#00d4ff;--accent2:#7c3aed;
+  --green:#10b981;--red:#ef4444;--yellow:#f59e0b;--orange:#f97316;
+  --text:#e2e8f0;--dim:#4a5568;--mid:#718096;
+  --sb:158px;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{
+  font-family:'Space Grotesk',sans-serif;
+  background:var(--bg0);color:var(--text);
+  width:1060px;height:700px;
+  display:flex;flex-direction:column;
+  overflow:hidden;
+}
+#progressBar{height:2px;width:0%;background:linear-gradient(90deg,var(--accent),var(--accent2));position:fixed;top:0;left:0;z-index:999;transition:width 0.3s;}
+
+/* ═══ HEADER ═══════════════════════════════════════════════════ */
+.header{
+  display:flex;align-items:center;gap:8px;
+  padding:5px 12px;height:42px;
+  background:var(--bg1);border-bottom:1px solid var(--border);
+  flex-shrink:0;
+}
+.logo{display:flex;align-items:center;gap:7px;flex-shrink:0;}
+.logo-icon{width:26px;height:26px;background:linear-gradient(135deg,#00d4ff,#7c3aed);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px;}
+.logo-name{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;color:var(--accent);}
+.logo-ver{font-size:8px;color:var(--dim);letter-spacing:1px;}
+
+.target-area{
+  width:200px;flex-shrink:0;
+  display:flex;align-items:center;gap:5px;
+  background:var(--bg2);border:1px solid var(--border);border-radius:5px;
+  padding:3px 8px;cursor:pointer;transition:border-color 0.15s;height:28px;
+}
+.target-area:hover{border-color:var(--accent);}
+.scope-badge{font-size:8px;font-weight:700;padding:1px 5px;border-radius:3px;letter-spacing:0.5px;white-space:nowrap;flex-shrink:0;}
+.scope-none{background:#ef444418;color:#ef4444;border:1px solid #ef444430;}
+.scope-exact{background:#10b98118;color:#10b981;border:1px solid #10b98130;}
+.scope-wild{background:#f59e0b18;color:#f59e0b;border:1px solid #f59e0b30;}
+#targetDisplay{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--mid);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;}
+
+.hbtns{display:flex;gap:3px;flex-shrink:0;}
+.hbtn{
+  display:flex;align-items:center;gap:3px;
+  height:28px;padding:0 10px;
+  border:1px solid var(--border);border-radius:5px;
+  font-family:'Space Grotesk',sans-serif;font-size:11px;font-weight:600;
+  cursor:pointer;transition:all 0.15s;background:var(--bg2);color:var(--mid);outline:none;
+}
+#scanBtn{background:#00d4ff12;color:var(--accent);border-color:#00d4ff30;padding:0 12px;}
+#scanBtn:hover:not(:disabled){background:#00d4ff22;box-shadow:0 0 8px #00d4ff15;}
+#scanBtn:disabled{opacity:0.5;cursor:not-allowed;}
+#scanBtn.scanning{animation:pulse 1.2s infinite;}
+.hbtn-ic{padding:0 8px;font-size:13px;}
+#saveBtn{color:var(--green);}
+#saveBtn:hover{background:#10b98112;border-color:#10b98130;}
+#historyBtn:hover,#loadHistoryBtn:hover,#exportBtn:hover{color:var(--accent);border-color:#00d4ff30;}
+#clearBtn:hover{color:var(--red);border-color:#ef444440;}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 #00d4ff20}50%{box-shadow:0 0 0 4px #00d4ff08}}
+
+/* ═══ BODY WRAP ════════════════════════════════════════════════ */
+.body-wrap{flex:1;display:flex;overflow:hidden;}
+
+/* ═══ SIDEBAR ══════════════════════════════════════════════════ */
+.sidebar{
+  width:var(--sb);flex-shrink:0;
+  background:var(--bg1);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;
+  overflow-y:auto;overflow-x:hidden;
+  padding-bottom:8px;
+}
+.sidebar::-webkit-scrollbar{width:2px;}
+.sidebar::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+
+.sb-group{padding-top:8px;}
+.sb-group-label{
+  font-size:8px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;
+  color:var(--dim);padding:0 10px 6px 12px;
+  display:flex;align-items:center;gap:6px;
+}
+.sb-group-label::after{content:'';flex:1;height:1px;background:var(--border);}
+.sb-sep{height:1px;background:var(--border);margin:4px 0;}
+
+.sb-item{
+  display:flex;align-items:center;gap:7px;
+  padding:5px 8px 5px 0;
+  cursor:pointer;
+  border-left:2px solid transparent;
+  transition:all 0.1s;
+  user-select:none;
+  position:relative;
+}
+.sb-item:hover{background:#ffffff07;}
+.sb-item:hover .sb-label{color:var(--text);}
+.sb-item.active{
+  border-left-color:var(--ic,#00d4ff);
+  background:color-mix(in srgb, var(--ic,#00d4ff) 6%, transparent);
+}
+.sb-item.active .sb-label{color:var(--ic,#00d4ff);font-weight:600;}
+.sb-item.active .sb-dot{opacity:1;box-shadow:0 0 4px var(--ic,#00d4ff);}
+
+.sb-dot{width:6px;height:6px;border-radius:50%;background:var(--ic,#00d4ff);flex-shrink:0;opacity:0.35;transition:all 0.1s;margin-left:12px;}
+.sb-label{font-size:11px;color:var(--mid);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:color 0.1s;}
+.sb-cnt{
+  font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;
+  padding:1px 5px;border-radius:8px;
+  background:var(--bg3);color:var(--dim);
+  flex-shrink:0;min-width:18px;text-align:center;margin-right:8px;
+  transition:all 0.2s;
+}
+.sb-item.has-data .sb-cnt{
+  background:color-mix(in srgb,var(--ic,#00d4ff) 18%,transparent);
+  color:var(--ic,#00d4ff);
+}
+.sb-item.has-critical .sb-cnt{
+  background:#ef444425;color:#ef4444;
+  animation:crit 1.8s infinite;
+}
+@keyframes crit{0%,100%{opacity:1}50%{opacity:0.55}}
+
+/* ═══ CONTENT ══════════════════════════════════════════════════ */
+.content-wrap{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;}
+
+/* Toolbar */
+.toolbar{
+  display:flex;gap:5px;padding:5px 10px;
+  background:var(--bg1);border-bottom:1px solid var(--border);
+  flex-shrink:0;align-items:center;min-height:34px;
+}
+#searchBox{
+  width:180px;flex-shrink:0;background:var(--bg2);border:1px solid var(--border);
+  border-radius:5px;padding:4px 9px;color:var(--text);
+  font-family:'JetBrains Mono',monospace;font-size:11px;outline:none;
+  transition:border-color 0.15s;
+}
+#searchBox:focus{border-color:var(--accent);}
+#searchBox::placeholder{color:var(--dim);}
+.filter-sel{
+  background:var(--bg2);border:1px solid var(--border);border-radius:5px;
+  padding:3px 7px;color:var(--mid);font-size:11px;outline:none;
+  cursor:pointer;font-family:'Space Grotesk',sans-serif;flex-shrink:0;
+}
+.filter-sel:focus{border-color:var(--accent);}
+.filter-group{display:none;align-items:center;gap:5px;}
+.filter-group.visible{display:flex;}
+.filter-label{font-size:9px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;white-space:nowrap;}
+.filter-divider{width:1px;height:16px;background:var(--border);flex-shrink:0;}
+
+/* Main pane */
+.main{flex:1;overflow:hidden;position:relative;display:flex;flex-direction:column;}
+.tab-pane{display:none;height:100%;overflow-y:auto;flex-direction:column;}
+.tab-pane.active{display:flex;}
+
+/* ═══ TABLES ═══════════════════════════════════════════════════ */
+.dtable{width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;}
+.dtable thead{position:sticky;top:0;background:var(--bg2);z-index:5;}
+.dtable th{padding:5px 10px;text-align:left;color:var(--dim);font-size:9px;font-weight:600;letter-spacing:0.8px;text-transform:uppercase;border-bottom:1px solid var(--border);}
+.dtable td{padding:5px 10px;border-bottom:1px solid #12181f;vertical-align:middle;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dtable tr:hover td{background:#0d1520;}
+.hl{background:#f59e0b30;color:#fbbf24;border-radius:2px;padding:0 1px;}
+
+/* ═══ BADGES ════════════════════════════════════════════════════ */
+.badge{display:inline-flex;align-items:center;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;border:1px solid transparent;}
+.b-critical{background:#ef444418;color:#ef4444;border-color:#ef444430}
+.b-high{background:#f9731618;color:#f97316;border-color:#f9731630}
+.b-medium{background:#f59e0b18;color:#f59e0b;border-color:#f59e0b30}
+.b-low{background:#10b98118;color:#10b981;border-color:#10b98130}
+.b-info{background:#3b82f618;color:#3b82f6;border-color:#3b82f630}
+.b-ok{background:#10b98112;color:#6ee7b7;border-color:#10b98120}
+.b-api{background:#7c3aed18;color:#a78bfa;border-color:#7c3aed30}
+.b-sensitive{background:#ef444418;color:#fca5a5;border-color:#ef444430}
+.b-js{background:#f59e0b18;color:#fde68a;border-color:#f59e0b20}
+.b-graphql{background:#e879f918;color:#f9a8d4;border-color:#e879f930}
+.b-form{background:#0ea5e918;color:#7dd3fc;border-color:#0ea5e930}
+.b-link{background:#10b98118;color:#6ee7b7;border-color:#10b98130}
+.b-url{background:#ec489918;color:#f9a8d4;border-color:#ec489930}
+.b-xhr{background:#8b5cf618;color:#c4b5fd;border-color:#8b5cf630}
+.b-get{background:#3b82f618;color:#60a5fa;border-color:#3b82f630}
+.b-post{background:#f59e0b18;color:#fbbf24;border-color:#f59e0b30}
+.b-post-json{background:#f59e0b18;color:#fbbf24;border-color:#f59e0b30}
+.b-post-form{background:#f59e0b22;color:#fcd34d;border-color:#f59e0b40}
+.b-xhr-json{background:#8b5cf618;color:#c4b5fd;border-color:#8b5cf630}
+.b-xhr-form{background:#8b5cf622;color:#d8b4fe;border-color:#8b5cf640}
+.b-put{background:#10b98118;color:#34d399;border-color:#10b98130}
+.b-delete{background:#ef444418;color:#f87171;border-color:#ef444430}
+.b-patch{background:#8b5cf618;color:#c4b5fd;border-color:#8b5cf630}
+.b-page{background:#1e293b;color:#64748b;border-color:#334155}
+.b-file{background:#f9731618;color:#fdba74;border-color:#f9731630}
+.b-discovered{background:#64748b18;color:#94a3b8;border-color:#64748b30}
+.b-sourcemap{background:#a855f718;color:#c084fc;border-color:#a855f730}
+.b-external{background:#f59e0b18;color:#fbbf24;border-color:#f59e0b30}
+.b-internal{background:#10b98118;color:#6ee7b7;border-color:#10b98130}
+.b-vuln{background:#ef444420;color:#ef4444;border-color:#ef444440;}
+.b-safe{background:#10b98115;color:#6ee7b7;border-color:#10b98130;}
+.b-changed{background:#f59e0b20;color:#fbbf24;border-color:#f59e0b40;}
+.accent{color:var(--accent)}.dim{color:var(--dim)}.mid{color:var(--mid)}
+
+.url-link{color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px;text-decoration-color:#00d4ff35;transition:all 0.15s;font-family:'JetBrains Mono',monospace;font-size:11px;}
+.url-link:hover{text-decoration-color:var(--accent);filter:brightness(1.3);}
+.copy-cell{width:48px;}
+.cbtn{opacity:0;background:none;border:1px solid var(--border);color:var(--dim);border-radius:3px;padding:2px 6px;font-size:9px;cursor:pointer;transition:all 0.15s;font-family:'Space Grotesk',sans-serif;font-weight:600;}
+tr:hover .cbtn{opacity:1;}
+.cbtn:hover,.cbtn.done{color:var(--green);border-color:var(--green);}
+
+.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--dim);font-size:12px;padding:40px;}
+.empty-icon{font-size:32px;opacity:0.2;}
+.empty small{font-size:10px;opacity:0.6;}
+
+/* No-scope overlay */
+.no-scope-warn{display:none;position:absolute;inset:0;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:var(--bg0);z-index:10;padding:40px;}
+.no-scope-warn.visible{display:flex;}
+.warn-icon{font-size:42px;opacity:0.3;}
+.warn-title{font-size:14px;font-weight:700;color:var(--yellow);}
+.warn-sub{font-size:11px;color:var(--dim);text-align:center;max-width:360px;line-height:1.6;}
+.warn-btn{display:flex;align-items:center;gap:6px;padding:7px 16px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;border:1px solid #00d4ff30;background:#00d4ff12;color:var(--accent);transition:all 0.15s;margin-top:4px;}
+.warn-btn:hover{background:#00d4ff22;}
+
+/* Fuzzer ctrl bar */
+.fuzzer-ctrl{display:flex;align-items:center;gap:7px;padding:7px 10px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0;flex-wrap:wrap;}
+.fuzzer-label{font-size:10px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:0.8px;white-space:nowrap;}
+.fuzzer-input{background:var(--bg1);border:1px solid var(--border);border-radius:5px;padding:4px 8px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;outline:none;}
+.fuzzer-input:focus{border-color:var(--accent);}
+.run-btn{display:flex;align-items:center;gap:4px;padding:4px 11px;border-radius:5px;font-size:11px;font-weight:700;cursor:pointer;border:1px solid;font-family:'Space Grotesk',sans-serif;transition:all 0.15s;}
+.run-btn:disabled{opacity:0.4;cursor:not-allowed;}
+.run-fuzz{background:#f9731612;color:#f97316;border-color:#f9731630;}
+.run-fuzz:hover:not(:disabled){background:#f9731622;}
+.run-idor{background:#a855f712;color:#c084fc;border-color:#a855f730;}
+.run-idor:hover:not(:disabled){background:#a855f722;}
+.run-cors{background:#14b8a612;color:#2dd4bf;border-color:#14b8a630;}
+.run-cors:hover:not(:disabled){background:#14b8a622;}
+.run-gql{background:#e879f912;color:#f9a8d4;border-color:#e879f930;}
+.run-gql:hover:not(:disabled){background:#e879f922;}
+.run-btn.running{animation:pulse 1s infinite;}
+
+/* Payload panel */
+.payload-panel{background:var(--bg1);border-top:1px solid var(--border);padding:5px 10px;flex-shrink:0;}
+.payload-row{display:flex;align-items:center;gap:5px;flex-wrap:wrap;}
+.payload-label{font-size:9px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:0.8px;white-space:nowrap;}
+.pchip{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;cursor:pointer;border:1px solid transparent;font-family:'JetBrains Mono',monospace;transition:all 0.15s;}
+.pchip:hover{filter:brightness(1.4);transform:translateY(-1px);}
+.pchip.fired{animation:chipfire 0.35s ease;}
+@keyframes chipfire{0%{transform:scale(1)}50%{transform:scale(1.15)}100%{transform:scale(1)}}
+.p-sqli{background:#ef444415;color:#ef4444;border-color:#ef444430;}
+.p-xss{background:#f59e0b15;color:#f59e0b;border-color:#f59e0b30;}
+.p-lfi{background:#10b98115;color:#10b981;border-color:#10b98130;}
+.p-ssrf{background:#3b82f615;color:#3b82f6;border-color:#3b82f630;}
+.p-ssti{background:#8b5cf615;color:#8b5cf6;border-color:#8b5cf630;}
+.p-rce{background:#ec489915;color:#ec4899;border-color:#ec489930;}
+.p-idor{background:#f9731615;color:#f97316;border-color:#f9731630;}
+.payload-sep{width:1px;height:14px;background:var(--border);}
+#autoTestBtn{display:flex;align-items:center;gap:4px;padding:3px 9px;border-radius:4px;font-size:10px;font-weight:700;cursor:pointer;border:1px solid #00d4ff30;background:#00d4ff10;color:var(--accent);font-family:'Space Grotesk',sans-serif;transition:all 0.15s;}
+#autoTestBtn:hover:not(:disabled){background:#00d4ff20;}
+#autoTestBtn:disabled{opacity:0.4;cursor:not-allowed;}
+#autoTestBtn.running{animation:pulse 1s infinite;}
+
+/* Status bar */
+.statusbar{display:flex;align-items:center;justify-content:space-between;padding:2px 10px;background:var(--bg1);border-top:1px solid var(--border);font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--dim);flex-shrink:0;}
+.status-dot{width:5px;height:5px;border-radius:50%;background:var(--green);display:inline-block;margin-right:4px;animation:blink 2s infinite;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.2}}
+
+/* WS messages */
+.ws-messages{font-size:10px;padding:8px 10px;background:var(--bg1);border-top:1px solid var(--border);max-height:120px;overflow-y:auto;}
+.ws-msg{display:flex;gap:8px;padding:2px 0;border-bottom:1px solid #12181f;}
+.ws-msg-in{color:var(--green);}
+.ws-msg-out{color:var(--accent);}
+.ws-msg-dir{font-weight:700;width:28px;flex-shrink:0;font-size:9px;}
+.ws-msg-data{color:var(--mid);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+/* Modals */
+#targetModal,#historyModal{display:none;position:fixed;inset:0;background:#00000088;z-index:100;align-items:center;justify-content:center;}
+#targetModal.open,#historyModal.open{display:flex;}
+.modal-box{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:20px;width:460px;box-shadow:0 20px 60px #00000070;}
+.modal-box-wide{width:580px;}
+.modal-title{font-size:14px;font-weight:700;margin-bottom:4px;}
+.modal-sub{font-size:11px;color:var(--mid);margin-bottom:14px;}
+.modal-label{font-size:10px;color:var(--dim);font-weight:600;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:6px;}
+.modal-row{margin-bottom:13px;}
+#targetInput{width:100%;background:var(--bg1);border:1px solid var(--border);border-radius:5px;padding:7px 10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;outline:none;transition:border-color 0.15s;}
+#targetInput:focus{border-color:var(--accent);}
+.modal-hint{font-size:10px;color:var(--dim);margin-top:7px;}
+.modal-hint code{color:var(--accent);font-family:'JetBrains Mono',monospace;}
+.scope-opts{display:flex;gap:7px;}
+.scope-opt{flex:1;padding:8px;border:1px solid var(--border);border-radius:6px;cursor:pointer;text-align:center;transition:all 0.15s;background:var(--bg1);}
+.scope-opt:hover{border-color:var(--accent);}
+.scope-opt.selected{border-color:var(--accent);background:#00d4ff10;}
+.scope-opt-title{font-size:11px;font-weight:700;}
+.scope-opt-sub{font-size:9px;color:var(--dim);margin-top:2px;}
+.modal-btns{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;}
+.mbtn{border-radius:5px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Space Grotesk',sans-serif;border:1px solid var(--border);}
+.mbtn-cancel{background:var(--bg1);color:var(--mid);}
+.mbtn-apply{background:#00d4ff15;border-color:#00d4ff35;color:var(--accent);}
+.mbtn-apply:hover{background:#00d4ff25;}
+.session-list{max-height:300px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;}
+.session-item{display:flex;align-items:center;gap:9px;padding:9px 11px;background:var(--bg1);border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:all 0.15s;}
+.session-item:hover{border-color:var(--accent);background:#00d4ff08;}
+.session-host{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent);font-weight:600;flex:1;}
+.session-meta{font-size:10px;color:var(--dim);}
+.session-counts{display:flex;gap:5px;}
+.session-count{font-size:10px;padding:1px 6px;border-radius:3px;font-weight:600;}
+.sc-p{background:#7c3aed18;color:#a78bfa;}
+.sc-s{background:#f59e0b18;color:#fbbf24;}
+.sc-e{background:#0ea5e918;color:#38bdf8;}
+.session-del{font-size:11px;color:var(--dim);cursor:pointer;padding:2px 6px;border-radius:3px;border:1px solid transparent;}
+.session-del:hover{color:var(--red);border-color:#ef444430;}
+.no-sessions{text-align:center;color:var(--dim);font-size:12px;padding:28px;}
+
+::-webkit-scrollbar{width:3px;height:3px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+</style>
+</head>
+<body>
+<div id="progressBar"></div>
+
+<!-- TARGET MODAL -->
+<div id="targetModal">
+  <div class="modal-box">
+    <div class="modal-title">🎯 Set Target Scope</div>
+    <div class="modal-sub">تحديد التارجت يمنع ظهور نتايج out-of-scope</div>
+    <div class="modal-row">
+      <div class="modal-label">Target Host</div>
+      <input id="targetInput" placeholder="example.com  or  *.example.com" />
+      <div class="modal-hint">Exact: <code>example.com</code> &nbsp;|&nbsp; Wildcard: <code>*.example.com</code> &nbsp;|&nbsp; اتركه فاضي لكل الدومينز</div>
+    </div>
+    <div class="modal-row">
+      <div class="modal-label">Scope Type</div>
+      <div class="scope-opts">
+        <div class="scope-opt selected" id="scopeExact"><div class="scope-opt-title">Exact</div><div class="scope-opt-sub">example.com فقط</div></div>
+        <div class="scope-opt" id="scopeWildcard"><div class="scope-opt-title">Wildcard ✦</div><div class="scope-opt-sub">*.example.com + root</div></div>
+        <div class="scope-opt" id="scopeNone"><div class="scope-opt-title">No Filter</div><div class="scope-opt-sub">كل حاجة</div></div>
+      </div>
+    </div>
+    <div class="modal-btns">
+      <button class="mbtn mbtn-cancel" id="cancelModal">Cancel</button>
+      <button class="mbtn mbtn-apply" id="applyTarget">✓ Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- HISTORY MODAL -->
+<div id="historyModal">
+  <div class="modal-box modal-box-wide">
+    <div class="modal-title">📂 Saved Sessions</div>
+    <div class="modal-sub">Click any session to load it — data restores automatically</div>
+    <div class="session-list" id="sessionList"><div class="no-sessions">No saved sessions yet</div></div>
+    <div class="modal-btns">
+      <button class="mbtn mbtn-cancel" id="closeHistory">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- HEADER                                                       -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="header">
+  <div class="logo">
+    <div class="logo-icon">🦅</div>
+    <div>
+      <div class="logo-name">ReconHawk <span style="color:var(--dim);font-weight:400">Pro</span></div>
+      <div class="logo-ver">V4.1</div>
+    </div>
+  </div>
+
+  <div class="target-area" id="targetArea" title="Click to set target scope">
+    <span class="scope-badge scope-none" id="scopeBadge">NO SCOPE</span>
+    <span id="targetDisplay">Click to set target...</span>
+  </div>
+
+  <div class="hbtns">
+    <button class="hbtn" id="scanBtn">⚡ Scan</button>
+    <button class="hbtn hbtn-ic" id="saveBtn" title="Save session">💾</button>
+    <button class="hbtn hbtn-ic" id="historyBtn" title="Saved sessions">📂</button>
+    <button class="hbtn hbtn-ic" id="loadHistoryBtn" title="Import JSON">📥</button>
+    <input type="file" id="importFileInput" accept=".json" style="display:none;">
+    <button class="hbtn hbtn-ic" id="exportBtn" title="Export JSON">↓</button>
+    <button class="hbtn hbtn-ic" id="clearBtn" title="Clear all data">✕</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- BODY WRAP                                                    -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="body-wrap">
+
+  <!-- ─── SIDEBAR ──────────────────────────────────────────── -->
+  <nav class="sidebar">
+
+    <div class="sb-group">
+      <div class="sb-group-label">Recon</div>
+      <div class="sb-item active" id="tab-params" style="--ic:#a78bfa">
+        <span class="sb-dot"></span><span class="sb-label">Params</span>
+        <span class="sb-cnt" id="cnt-params">0</span>
+      </div>
+      <div class="sb-item" id="tab-endpoints" style="--ic:#38bdf8">
+        <span class="sb-dot"></span><span class="sb-label">Endpoints</span>
+        <span class="sb-cnt" id="cnt-endpoints">0</span>
+      </div>
+      <div class="sb-item" id="tab-secrets" style="--ic:#fbbf24">
+        <span class="sb-dot"></span><span class="sb-label">Secrets</span>
+        <span class="sb-cnt" id="cnt-secrets">0</span>
+      </div>
+      <div class="sb-item" id="tab-requests" style="--ic:#34d399">
+        <span class="sb-dot"></span><span class="sb-label">Requests</span>
+        <span class="sb-cnt" id="cnt-requests">0</span>
+      </div>
+      <div class="sb-item" id="tab-subdomains" style="--ic:#86efac">
+        <span class="sb-dot"></span><span class="sb-label">Subdomains</span>
+        <span class="sb-cnt" id="cnt-subdomains">0</span>
+      </div>
+      <div class="sb-item" id="tab-headers" style="--ic:#60a5fa">
+        <span class="sb-dot"></span><span class="sb-label">Headers</span>
+        <span class="sb-cnt" id="cnt-headers">0</span>
+      </div>
+    </div>
+
+    <div class="sb-sep"></div>
+
+    <div class="sb-group">
+      <div class="sb-group-label">Testing</div>
+      <div class="sb-item" id="tab-reflect" style="--ic:#f472b6">
+        <span class="sb-dot"></span><span class="sb-label">Reflect</span>
+        <span class="sb-cnt" id="cnt-reflect">0</span>
+      </div>
+      <div class="sb-item" id="tab-fuzzer" style="--ic:#fb923c">
+        <span class="sb-dot"></span><span class="sb-label">Fuzzer</span>
+        <span class="sb-cnt" id="cnt-fuzzer">0</span>
+      </div>
+      <div class="sb-item" id="tab-idor" style="--ic:#c084fc">
+        <span class="sb-dot"></span><span class="sb-label">IDOR</span>
+        <span class="sb-cnt" id="cnt-idor">0</span>
+      </div>
+      <div class="sb-item" id="tab-cors" style="--ic:#2dd4bf">
+        <span class="sb-dot"></span><span class="sb-label">CORS</span>
+        <span class="sb-cnt" id="cnt-cors">0</span>
+      </div>
+      <div class="sb-item" id="tab-graphql" style="--ic:#f9a8d4">
+        <span class="sb-dot"></span><span class="sb-label">GraphQL</span>
+        <span class="sb-cnt" id="cnt-graphql">0</span>
+      </div>
+    </div>
+
+    <div class="sb-sep"></div>
+
+    <div class="sb-group">
+      <div class="sb-group-label">Tools</div>
+      <div class="sb-item" id="tab-jwt" style="--ic:#34d399">
+        <span class="sb-dot"></span><span class="sb-label">JWT</span>
+        <span class="sb-cnt" id="cnt-jwt">0</span>
+      </div>
+      <div class="sb-item" id="tab-websocket" style="--ic:#a78bfa">
+        <span class="sb-dot"></span><span class="sb-label">WebSocket</span>
+        <span class="sb-cnt" id="cnt-websocket">0</span>
+      </div>
+      <div class="sb-item" id="tab-api-docs" style="--ic:#60a5fa">
+        <span class="sb-dot"></span><span class="sb-label">API Docs</span>
+        <span class="sb-cnt" id="cnt-api-docs">0</span>
+      </div>
+      <div class="sb-item" id="tab-custom-payloads" style="--ic:#fbbf24">
+        <span class="sb-dot"></span><span class="sb-label">My Payloads</span>
+        <span class="sb-cnt" id="cnt-custom-payloads">0</span>
+      </div>
+    </div>
+
+  </nav>
+
+  <!-- ─── CONTENT ──────────────────────────────────────────── -->
+  <div class="content-wrap">
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <input id="searchBox" placeholder="Search...">
+
+      <div class="filter-group" id="fg-risk">
+        <div class="filter-divider"></div><span class="filter-label">Risk</span>
+        <select class="filter-sel" id="fRisk">
+          <option value="">All</option>
+          <option>CRITICAL</option><option>HIGH</option><option>MEDIUM</option><option>LOW</option><option>INFO</option>
+        </select>
+      </div>
+      <div class="filter-group" id="fg-source">
+        <div class="filter-divider"></div><span class="filter-label">Source</span>
+        <select class="filter-sel" id="fSource">
+          <option value="">All</option>
+          <option>URL</option><option>FORM</option><option>JS</option><option>LINK</option>
+          <option>POST-JSON</option><option>POST-FORM</option><option>XHR-JSON</option><option>XHR-FORM</option>
+        </select>
+      </div>
+      <div class="filter-group" id="fg-ep-type">
+        <div class="filter-divider"></div><span class="filter-label">Type</span>
+        <select class="filter-sel" id="fEpType">
+          <option value="">All</option>
+          <option>API</option><option>GRAPHQL</option><option>SENSITIVE</option><option>FILE</option>
+          <option>SERVER-SIDE</option><option>JS</option><option>DATA</option><option>PAGE</option>
+          <option>LINK</option><option>EXTERNAL</option><option>INTERNAL</option><option>SOURCEMAP</option>
+        </select>
+      </div>
+      <div class="filter-group" id="fg-method">
+        <div class="filter-divider"></div><span class="filter-label">Method</span>
+        <select class="filter-sel" id="fMethod">
+          <option value="">All</option>
+          <option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option>
+          <option>DISCOVERED</option><option>SOURCEMAP</option>
+        </select>
+      </div>
+      <div class="filter-group" id="fg-req-method">
+        <div class="filter-divider"></div><span class="filter-label">Method</span>
+        <select class="filter-sel" id="fReqMethod">
+          <option value="">All</option>
+          <option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option>
+        </select>
+      </div>
+      <div class="filter-group" id="fg-req-type">
+        <div class="filter-divider"></div><span class="filter-label">Type</span>
+        <select class="filter-sel" id="fReqType">
+          <option value="">All</option>
+          <option>xmlhttprequest</option><option>fetch</option><option>main_frame</option>
+          <option>sub_frame</option><option>script</option><option>image</option>
+        </select>
+      </div>
+      <div class="filter-group" id="fg-fuzz-type">
+        <div class="filter-divider"></div><span class="filter-label">Type</span>
+        <select class="filter-sel" id="fFuzzType">
+          <option value="">All</option>
+          <option>SQLI</option><option>XSS</option><option>LFI</option>
+          <option>SSRF</option><option>SSTI</option><option>RCE</option><option>IDOR</option>
+        </select>
+      </div>
+      <div class="filter-group" id="fg-fuzz-alert">
+        <div class="filter-divider"></div><span class="filter-label">Alert</span>
+        <select class="filter-sel" id="fFuzzAlert">
+          <option value="">All</option><option value="1">Interesting Only</option>
+        </select>
+      </div>
+      <div class="filter-group" id="fg-secret-risk">
+        <div class="filter-divider"></div><span class="filter-label">Risk</span>
+        <select class="filter-sel" id="fSecretRisk">
+          <option value="">All</option>
+          <option>CRITICAL</option><option>HIGH</option><option>MEDIUM</option><option>LOW</option>
+        </select>
+      </div>
+      <div class="filter-group" id="fg-cors-vuln">
+        <div class="filter-divider"></div><span class="filter-label">Status</span>
+        <select class="filter-sel" id="fCorsVuln">
+          <option value="">All</option><option value="1">Vulnerable Only</option>
+        </select>
+      </div>
+      <div class="filter-group" id="fg-header-status">
+        <div class="filter-divider"></div><span class="filter-label">Status</span>
+        <select class="filter-sel" id="fHeaderStatus">
+          <option value="">All</option>
+          <option value="missing">Missing Only</option><option value="ok">Present Only</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Panes -->
+    <div class="main">
+      <div class="no-scope-warn" id="noScopeWarn">
+        <div class="warn-icon">🎯</div>
+        <div class="warn-title">No Target Scope Set</div>
+        <div class="warn-sub">بدون تحديد التارجت، الأداة مش هتعرف تفلتر النتايج ومش هتمسك أي بيانات.<br>حدد التارجت الأول عشان تشوف النتايج.</div>
+        <button class="warn-btn" id="setTargetFromWarn">🎯 Set Target Now</button>
+      </div>
+
+      <!-- PARAMS -->
+      <div class="tab-pane active" id="pane-params">
+        <div class="empty" id="empty-params"><div class="empty-icon">🔍</div><div>No parameters yet</div><small>Click ⚡ Scan or browse the target</small></div>
+        <table class="dtable" id="tbl-params" style="display:none">
+          <thead><tr><th>PARAMETER</th><th>RISK</th><th>SOURCE</th><th>VALUE</th><th>URL</th><th class="copy-cell"></th></tr></thead>
+          <tbody id="body-params"></tbody>
+        </table>
+      </div>
+
+      <!-- ENDPOINTS -->
+      <div class="tab-pane" id="pane-endpoints">
+        <div class="empty" id="empty-endpoints"><div class="empty-icon">🗺️</div><div>No endpoints discovered</div></div>
+        <table class="dtable" id="tbl-endpoints" style="display:none">
+          <thead><tr><th>ENDPOINT</th><th>METHOD</th><th>TYPE</th><th>HOST</th><th>URL</th><th class="copy-cell"></th></tr></thead>
+          <tbody id="body-endpoints"></tbody>
+        </table>
+      </div>
+
+      <!-- SECRETS -->
+      <div class="tab-pane" id="pane-secrets">
+        <div class="empty" id="empty-secrets"><div class="empty-icon">🔑</div><div>No secrets found</div><small>Scans JS files for API keys, tokens, passwords</small></div>
+        <table class="dtable" id="tbl-secrets" style="display:none">
+          <thead><tr><th>SECRET TYPE</th><th>RISK</th><th>VALUE (masked)</th><th>FOUND IN</th><th class="copy-cell"></th></tr></thead>
+          <tbody id="body-secrets"></tbody>
+        </table>
+      </div>
+
+      <!-- REFLECT -->
+      <div class="tab-pane" id="pane-reflect">
+        <div class="empty" id="empty-reflect"><div class="empty-icon">🪞</div><div>No payload results yet</div><small>Click "Auto Test" to test HIGH risk params</small></div>
+        <table class="dtable" id="tbl-reflect" style="display:none">
+          <thead><tr><th>PARAM</th><th>TYPE</th><th>RESULT</th><th>HTTP</th><th>URL</th><th class="copy-cell"></th></tr></thead>
+          <tbody id="body-reflect"></tbody>
+        </table>
+      </div>
+
+      <!-- REQUESTS -->
+      <div class="tab-pane" id="pane-requests">
+        <div class="empty" id="empty-requests"><div class="empty-icon">📡</div><div>No requests captured</div><small>Browse the target — requests appear automatically</small></div>
+        <table class="dtable" id="tbl-requests" style="display:none">
+          <thead><tr><th>METHOD</th><th>URL</th><th>TYPE</th><th>TIME</th><th class="copy-cell"></th></tr></thead>
+          <tbody id="body-requests"></tbody>
+        </table>
+      </div>
+
+      <!-- HEADERS -->
+      <div class="tab-pane" id="pane-headers">
+        <div class="empty" id="empty-headers"><div class="empty-icon">📋</div><div>No headers analyzed</div></div>
+        <table class="dtable" id="tbl-headers" style="display:none">
+          <thead><tr><th>HEADER</th><th>STATUS</th><th>VALUE</th><th>DESCRIPTION</th></tr></thead>
+          <tbody id="body-headers"></tbody>
+        </table>
+      </div>
+
+      <!-- FUZZER -->
+      <div class="tab-pane" id="pane-fuzzer">
+        <div class="fuzzer-ctrl">
+          <span class="fuzzer-label">🔫 Fuzzer</span>
+          <span style="font-size:10px;color:var(--dim);">Threads:</span>
+          <input class="fuzzer-input" id="fuzzThreads" type="number" value="3" min="1" max="10" style="width:48px">
+          <span style="font-size:10px;color:var(--dim);">Delay ms:</span>
+          <input class="fuzzer-input" id="fuzzDelay" type="number" value="200" min="0" max="2000" style="width:58px">
+          <select class="filter-sel" id="fuzzType">
+            <option value="all">All types</option>
+            <option value="sqli">SQLi</option><option value="xss">XSS</option>
+            <option value="lfi">LFI</option><option value="ssrf">SSRF</option>
+            <option value="ssti">SSTI</option><option value="rce">RCE</option><option value="idor">IDOR</option>
+          </select>
+          <button class="run-btn run-fuzz" id="runFuzzBtn">⚡ Start</button>
+          <button class="run-btn" id="stopFuzzBtn" style="background:#ef444412;color:#ef4444;border-color:#ef444430;display:none;">■ Stop</button>
+        </div>
+        <div class="empty" id="empty-fuzzer"><div class="empty-icon">🔫</div><div>No fuzz results yet</div><small>Sends payloads and compares response size &amp; status</small></div>
+        <table class="dtable" id="tbl-fuzzer" style="display:none">
+          <thead><tr><th>PARAM</th><th>TYPE</th><th>PAYLOAD</th><th>STATUS</th><th>SIZE Δ</th><th>ALERT</th><th>URL</th><th class="copy-cell"></th></tr></thead>
+          <tbody id="body-fuzzer"></tbody>
+        </table>
+      </div>
+
+      <!-- IDOR -->
+      <div class="tab-pane" id="pane-idor">
+        <div class="fuzzer-ctrl">
+          <span class="fuzzer-label">🔁 IDOR Detector</span>
+          <button class="run-btn run-idor" id="runIdorBtn">🔁 Start Scan</button>
+        </div>
+        <div class="empty" id="empty-idor"><div class="empty-icon">🔁</div><div>No IDOR results yet</div><small>Tests numeric ID params with different values</small></div>
+        <table class="dtable" id="tbl-idor" style="display:none">
+          <thead><tr><th>PARAM</th><th>ORIG</th><th>TEST</th><th>STATUS Δ</th><th>SIZE Δ</th><th>ALERT</th><th>URL</th><th class="copy-cell"></th></tr></thead>
+          <tbody id="body-idor"></tbody>
+        </table>
+      </div>
+
+      <!-- CORS -->
+      <div class="tab-pane" id="pane-cors">
+        <div class="fuzzer-ctrl">
+          <span class="fuzzer-label">🌐 CORS Tester</span>
+          <button class="run-btn run-cors" id="runCorsBtn">🌐 Test CORS</button>
+        </div>
+        <div class="empty" id="empty-cors"><div class="empty-icon">🌐</div><div>No CORS results yet</div><small>Tests endpoints with evil origin header</small></div>
+        <table class="dtable" id="tbl-cors" style="display:none">
+          <thead><tr><th>ENDPOINT</th><th>ACAO HEADER</th><th>ACAC</th><th>VERDICT</th><th>URL</th><th class="copy-cell"></th></tr></thead>
+          <tbody id="body-cors"></tbody>
+        </table>
+      </div>
+
+      <!-- GRAPHQL -->
+      <div class="tab-pane" id="pane-graphql">
+        <div class="fuzzer-ctrl">
+          <span class="fuzzer-label">◈ GraphQL</span>
+          <button class="run-btn run-gql" id="runGqlBtn">◈ Introspection</button>
+        </div>
+        <div class="empty" id="empty-graphql"><div class="empty-icon">◈</div><div>No GraphQL results</div><small>Detects endpoints and runs introspection query</small></div>
+        <table class="dtable" id="tbl-graphql" style="display:none">
+          <thead><tr><th>ENDPOINT</th><th>STATUS</th><th>TYPE</th><th>NAME</th><th>FIELDS</th></tr></thead>
+          <tbody id="body-graphql"></tbody>
+        </table>
+      </div>
+
+      <!-- SUBDOMAINS -->
+      <div class="tab-pane" id="pane-subdomains">
+        <div class="empty" id="empty-subdomains"><div class="empty-icon">🌍</div><div>No subdomains found</div><small>Extracted from JS files automatically on scan</small></div>
+        <table class="dtable" id="tbl-subdomains" style="display:none">
+          <thead><tr><th>SUBDOMAIN</th><th>DISCOVERED IN</th><th>FOUND AT</th><th class="copy-cell"></th></tr></thead>
+          <tbody id="body-subdomains"></tbody>
+        </table>
+      </div>
+
+      <!-- JWT -->
+      <div class="tab-pane" id="pane-jwt">
+        <div class="fuzzer-ctrl">
+          <span class="fuzzer-label">🔐 JWT Decoder</span>
+          <input class="fuzzer-input" id="jwtInput" placeholder="Paste JWT token here" style="flex:1;min-width:240px;">
+          <button class="run-btn run-fuzz" id="decodeJwtBtn">🔓 Decode</button>
+        </div>
+        <div class="empty" id="empty-jwt"><div class="empty-icon">🔐</div><div>No JWT tokens decoded yet</div></div>
+        <div id="jwt-results" style="display:none;padding:12px;overflow-y:auto;flex:1;">
+          <div id="jwt-warnings" style="margin-bottom:10px;"></div>
+          <div style="margin-bottom:10px;"><strong style="color:var(--accent);font-size:11px;">Header:</strong><pre id="jwt-header" style="background:var(--bg1);padding:8px;border-radius:4px;font-size:10px;overflow-x:auto;margin-top:4px;"></pre></div>
+          <div style="margin-bottom:10px;"><strong style="color:var(--accent);font-size:11px;">Payload:</strong><pre id="jwt-payload" style="background:var(--bg1);padding:8px;border-radius:4px;font-size:10px;overflow-x:auto;margin-top:4px;"></pre></div>
+          <div><strong style="color:var(--accent);font-size:11px;">Signature:</strong><pre id="jwt-signature" style="background:var(--bg1);padding:8px;border-radius:4px;font-size:10px;overflow-x:auto;margin-top:4px;"></pre></div>
+        </div>
+        <table class="dtable" id="tbl-jwt" style="display:none">
+          <thead><tr><th>TOKEN</th><th>ALGORITHM</th><th>EXPIRES</th><th>WARNINGS</th><th class="copy-cell"></th></tr></thead>
+          <tbody id="body-jwt"></tbody>
+        </table>
+      </div>
+
+      <!-- WEBSOCKET -->
+      <div class="tab-pane" id="pane-websocket">
+        <div class="empty" id="empty-websocket"><div class="empty-icon">🔌</div><div>No WebSocket connections detected</div><small>Monitored automatically when page connects</small></div>
+        <div id="ws-container" style="display:none;height:100%;overflow-y:auto;">
+          <table class="dtable" id="tbl-websocket">
+            <thead><tr><th>URL</th><th>PROTOCOL</th><th>STATUS</th><th>SENT</th><th>RECV</th><th>TIME</th><th class="copy-cell"></th></tr></thead>
+            <tbody id="body-websocket"></tbody>
+          </table>
+          <div id="ws-messages-panel"></div>
+        </div>
+      </div>
+
+      <!-- API DOCS -->
+      <div class="tab-pane" id="pane-api-docs">
+        <div class="fuzzer-ctrl">
+          <span class="fuzzer-label">📚 API Docs</span>
+          <button class="run-btn run-fuzz" id="scanApiDocsBtn">🔍 Scan</button>
+        </div>
+        <div class="empty" id="empty-api-docs"><div class="empty-icon">📚</div><div>No API documentation found</div></div>
+        <table class="dtable" id="tbl-api-docs" style="display:none">
+          <thead><tr><th>URL</th><th>TYPE</th><th>VERSION</th><th>ENDPOINTS</th><th class="copy-cell"></th></tr></thead>
+          <tbody id="body-api-docs"></tbody>
+        </table>
+      </div>
+
+      <!-- CUSTOM PAYLOADS -->
+      <div class="tab-pane" id="pane-custom-payloads">
+        <div class="fuzzer-ctrl">
+          <span class="fuzzer-label">📝 My Payloads</span>
+          <select class="filter-sel" id="customPayloadType">
+            <option value="sqli">SQLi</option><option value="xss">XSS</option>
+            <option value="lfi">LFI</option><option value="ssrf">SSRF</option>
+            <option value="ssti">SSTI</option><option value="rce">RCE</option><option value="idor">IDOR</option>
+          </select>
+          <textarea class="fuzzer-input" id="customPayloadInput" placeholder="One payload per line" style="flex:1;min-width:160px;height:52px;font-size:11px;resize:vertical;"></textarea>
+          <button class="run-btn run-fuzz" id="addCustomPayloadBtn">➕ Add</button>
+          <button class="run-btn" id="clearCustomPayloadsBtn" style="background:#ef444412;color:#ef4444;border-color:#ef444430;">🗑</button>
+        </div>
+        <div class="empty" id="empty-custom-payloads"><div class="empty-icon">📝</div><div>No custom payloads yet</div></div>
+        <table class="dtable" id="tbl-custom-payloads" style="display:none">
+          <thead><tr><th>TYPE</th><th>PAYLOAD</th><th class="copy-cell"></th></tr></thead>
+          <tbody id="body-custom-payloads"></tbody>
+        </table>
+      </div>
+
+    </div><!-- /main -->
+
+    <!-- PAYLOAD PANEL -->
+    <div class="payload-panel">
+      <div class="payload-row">
+        <span class="payload-label">⚡ Quick Copy</span>
+        <div class="pchip p-sqli" id="chip-sqli">SQLi</div>
+        <div class="pchip p-xss" id="chip-xss">XSS</div>
+        <div class="pchip p-lfi" id="chip-lfi">LFI</div>
+        <div class="pchip p-ssrf" id="chip-ssrf">SSRF</div>
+        <div class="pchip p-ssti" id="chip-ssti">SSTI</div>
+        <div class="pchip p-rce" id="chip-rce">RCE</div>
+        <div class="pchip p-idor" id="chip-idor">IDOR</div>
+        <div class="payload-sep"></div>
+        <button id="autoTestBtn">🤖 Auto Test HIGH</button>
+      </div>
+    </div>
+
+    <!-- STATUS BAR -->
+    <div class="statusbar">
+      <div><span class="status-dot"></span><span id="statusTxt">Ready — Set target scope to begin</span></div>
+      <div id="statsSummary">0 params | 0 endpoints | 0 secrets</div>
+    </div>
+
+  </div><!-- /content-wrap -->
+</div><!-- /body-wrap -->
+
+<script src="popup.js"></script>
+</body>
+</html>

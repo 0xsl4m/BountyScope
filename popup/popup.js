@@ -463,7 +463,7 @@ async function clearData() {
 // ─── Export ──────────────────────────────────────────────────
 function exportData() {
   const t=allData.target;
-  const report={ tool:"BountyScope v1.0", target:t?(t.wildcard?"*."+t.host:t.host||"all"):"unscoped",
+  const report={ tool:"BountyScope v1.0.0", target:t?(t.wildcard?"*."+t.host:t.host||"all"):"unscoped",
     timestamp:new Date().toISOString(),
     summary:{ params:allData.params.length, endpoints:allData.endpoints.length, secrets:allData.secrets.length,
       subdomains:allData.subdomains.length, corsVulns:allData.corsResults.filter(r=>r.vulnerable).length,
@@ -595,7 +595,7 @@ function renderParams() {
   if(src) items=items.filter(p=>(p.source||"").toUpperCase()===src.toUpperCase());
   showTable("params",items.length>0); if(!items.length) return;
   document.getElementById("body-params").innerHTML=items.map(p=>{
-    const r=paramRisk(p.key), sl=(p.source||"url").toLowerCase().replace("-","");
+    const r=paramRisk(p.key), sl=safeCls(p.source||"url");
     return `<tr>
       <td class="accent" style="font-weight:600">${highlight(p.key,q)}</td>
       <td><span class="badge b-${r.toLowerCase()}">${r}</span></td>
@@ -624,7 +624,7 @@ function renderEndpoints() {
   showTable("endpoints",items.length>0); if(!items.length) return;
   document.getElementById("body-endpoints").innerHTML=items.map(e=>{
     const t=(e.type||"PAGE"), tb=t==="SENSITIVE"?"b-sensitive":t==="API"?"b-api":t==="JS"?"b-js":t==="GRAPHQL"?"b-graphql":t==="FILE"?"b-file":t==="SOURCEMAP"?"b-sourcemap":t==="EXTERNAL"?"b-external":t==="INTERNAL"?"b-internal":"b-page";
-    const mb="b-"+(e.method||"GET").toLowerCase().replace("-","");
+    const mb="b-"+safeCls(e.method||"GET");
     return `<tr>
       <td class="accent">${highlight(e.path,q)}</td>
       <td><span class="badge ${mb}">${esc(e.method||"GET")}</span></td>
@@ -648,7 +648,7 @@ function renderSecrets() {
   if(risk) items=items.filter(s=>s.risk===risk);
   showTable("secrets",items.length>0); if(!items.length) return;
   document.getElementById("body-secrets").innerHTML=items.map(s=>{
-    const r=(s.risk||"low").toLowerCase();
+    const r=safeCls(s.risk||"low");
     return `<tr>
       <td class="accent">${highlight(s.name,q)}</td>
       <td><span class="badge b-${r}">${esc(s.risk)}</span></td>
@@ -677,7 +677,7 @@ function renderReflect() {
       <td class="accent">${highlight(r.param,q)}</td>
       <td><span class="badge ${pt}">${esc((r.payloadType||"").toUpperCase())}</span></td>
       <td><span class="badge ${res}">${txt}</span></td>
-      <td><span class="badge b-info">${r.status||"—"}</span></td>
+      <td><span class="badge b-info">${esc(r.status||"—")}</span></td>
       <td><span class="url-link" data-url="${escAttr(r.url||"")}">${highlight(shortUrl(r.url),q)}</span></td>
       <td class="copy-cell"><button class="cbtn" data-copy="${escAttr(r.url||"")}">copy</button></td>
     </tr>`;
@@ -694,7 +694,7 @@ function renderRequests() {
   if(type) items=items.filter(r=>(r.type||"").toLowerCase()===type.toLowerCase());
   showTable("requests",items.length>0); if(!items.length) return;
   document.getElementById("body-requests").innerHTML=items.map(r=>{
-    const mb="b-"+(r.method||"GET").toLowerCase();
+    const mb="b-"+safeCls(r.method||"GET");
     const time=new Date(r.timestamp).toLocaleTimeString();
     return `<tr>
       <td><span class="badge ${mb}">${esc(r.method||"GET")}</span></td>
@@ -749,10 +749,10 @@ function renderFuzzer() {
     const sizeDelta=r.sizeDelta>0?"+"+r.sizeDelta:r.sizeDelta;
     return `<tr>
       <td class="accent">${highlight(r.param,q)}</td>
-      <td><span class="badge b-${(r.type||"").toLowerCase()}">${esc(r.type||"")}</span></td>
+      <td><span class="badge b-${safeCls(r.type)}">${esc(r.type||"")}</span></td>
       <td class="dim" style="max-width:140px" title="${esc(r.payload||"")}">${highlight((r.payload||"").substring(0,30),q)}</td>
-      <td><span class="badge b-info">${r.status||"—"}</span></td>
-      <td class="${r.sizeDelta!==0?"accent":"dim"}">${sizeDelta}</td>
+      <td><span class="badge b-info">${esc(r.status||"—")}</span></td>
+      <td class="${r.sizeDelta!==0?"accent":"dim"}">${esc(sizeDelta)}</td>
       <td><span class="badge ${alert}">${alertTxt}</span></td>
       <td><span class="url-link" data-url="${escAttr(r.url||"")}">${highlight(shortUrl(r.url),q)}</span></td>
       <td class="copy-cell"><button class="cbtn" data-copy="${escAttr(r.url||"")}">copy</button></td>
@@ -777,7 +777,7 @@ function renderIdor() {
       <td class="dim">${esc(r.origVal)}</td>
       <td class="dim">${esc(r.testVal)}</td>
       <td><span class="badge ${r.statusChanged?"b-changed":"b-safe"}">${r.statusChanged?"CHANGED":"SAME"}</span></td>
-      <td class="${r.sizeDelta!==0?"accent":"dim"}">${r.sizeDelta>0?"+"+r.sizeDelta:r.sizeDelta}</td>
+      <td class="${r.sizeDelta!==0?"accent":"dim"}">${esc(r.sizeDelta>0?"+"+r.sizeDelta:r.sizeDelta)}</td>
       <td><span class="badge ${alert}">${alertTxt}</span></td>
       <td><span class="url-link" data-url="${escAttr(r.url||"")}">${highlight(shortUrl(r.url),q)}</span></td>
       <td class="copy-cell"><button class="cbtn" data-copy="${escAttr(r.url||"")}">copy</button></td>
@@ -826,7 +826,7 @@ function renderGraphQL() {
       <td><span class="badge ${r.introspectionEnabled?"b-vuln":"b-ok"}">${r.introspectionEnabled?"OPEN":"BLOCKED"}</span></td>
       <td class="dim">${esc(r.kind||"—")}</td>
       <td class="accent">${highlight(r.name||"—",q)}</td>
-      <td class="dim">${r.fieldCount||0} fields</td>
+      <td class="dim">${esc(r.fieldCount||0)} fields</td>
     </tr>`;
   }).join("");
 }
@@ -862,8 +862,8 @@ function renderWebSocket() {
       <td><span class="url-link" data-url="${escAttr(ws.url)}">${highlight(shortUrl(ws.url),q)}</span></td>
       <td class="dim">${esc(ws.protocol||"—")}</td>
       <td><span class="badge ${statusBadge}">${esc(ws.status||"?")}</span></td>
-      <td class="accent">${ws.sentCount||0}</td>
-      <td class="accent">${ws.receivedCount||0}</td>
+      <td class="accent">${esc(ws.sentCount||0)}</td>
+      <td class="accent">${esc(ws.receivedCount||0)}</td>
       <td class="dim">${new Date(ws.timestamp).toLocaleTimeString()}</td>
       <td class="copy-cell"><button class="cbtn" data-copy="${escAttr(ws.url)}">copy</button></td>
     </tr>`;
@@ -941,7 +941,7 @@ function renderApiDocs() {
       <td><span class="url-link" data-url="${escAttr(doc.url)}">${highlight(shortUrl(doc.url),q)}</span></td>
       <td><span class="badge ${tb}">${esc(doc.type)}</span></td>
       <td class="dim">${esc(doc.version)}</td>
-      <td class="accent">${doc.endpoints||0}</td>
+      <td class="accent">${esc(doc.endpoints||0)}</td>
       <td class="copy-cell"><button class="cbtn" data-copy="${escAttr(doc.url)}">copy</button></td>
     </tr>`;
   }).join("");
@@ -951,7 +951,7 @@ function renderApiDocs() {
 // ─── Auto Test ───────────────────────────────────────────────
 async function startAutoTest() {
   if (!allData.target?.host) { openModal(); setStatus("Active testing needs an Exact/Wildcard target (No-Filter is passive-only)"); return; }
-  const highParams=allData.params.filter(p=>paramRisk(p.key)==="HIGH"&&p.url);
+  const highParams=scopeFilterParams(allData.params.filter(p=>paramRisk(p.key)==="HIGH"&&p.url));
   if (!highParams.length) { setStatus("No HIGH risk params. Scan first."); return; }
   const btn=document.getElementById("autoTestBtn");
   btn.disabled=true; btn.classList.add("running"); btn.textContent="🤖 Testing...";
@@ -1244,13 +1244,13 @@ async function scanApiDocs() {
 }
 
 // ─── Custom Payloads ─────────────────────────────────────────
-const CUSTOM_PAYLOADS_STORAGE_KEY="bountyscope_custom_payloads";
-
+// Single source of truth: background settings.customPayloads (persisted via
+// SAVE_CUSTOM_PAYLOADS, loaded back through GET_SETTINGS).
 async function loadCustomPayloads() {
   try {
-    const result=await chrome.storage.local.get(CUSTOM_PAYLOADS_STORAGE_KEY);
-    const saved=result[CUSTOM_PAYLOADS_STORAGE_KEY]||[];
-    allData.customPayloads=saved;
+    const r = await chrome.runtime.sendMessage({ type:"GET_SETTINGS" });
+    const saved = (r?.settings?.customPayloads) || [];
+    allData.customPayloads = saved;
     saved.forEach(cp=>{
       if (!PAYLOADS[cp.type]) PAYLOADS[cp.type]=[];
       if (!PAYLOADS[cp.type].includes(cp.payload)) PAYLOADS[cp.type].push(cp.payload);
@@ -1263,8 +1263,7 @@ async function addCustomPayload() {
   const input=document.getElementById("customPayloadInput");
   const payloads=input.value.trim().split("\n").filter(p=>p.trim());
   if (!payloads.length) { setStatus("No payloads entered"); return; }
-  const result=await chrome.storage.local.get(CUSTOM_PAYLOADS_STORAGE_KEY);
-  const existing=result[CUSTOM_PAYLOADS_STORAGE_KEY]||[];
+  const existing = Array.isArray(allData.customPayloads) ? allData.customPayloads.slice() : [];
   payloads.forEach(p=>{
     const payload=p.trim();
     if (!existing.find(cp=>cp.type===type&&cp.payload===payload)) {
@@ -1273,10 +1272,9 @@ async function addCustomPayload() {
       if (!PAYLOADS[type].includes(payload)) PAYLOADS[type].push(payload);
     }
   });
-  await chrome.storage.local.set({[CUSTOM_PAYLOADS_STORAGE_KEY]:existing});
+  await chrome.runtime.sendMessage({type:"SAVE_CUSTOM_PAYLOADS",tabId:currentTabId,payloads:existing});
   allData.customPayloads=existing;
   input.value="";
-  await chrome.runtime.sendMessage({type:"SAVE_CUSTOM_PAYLOADS",tabId:currentTabId,payloads:existing});
   renderCustomPayloads(); updateCounts();
   setStatus(`✓ Added ${payloads.length} ${type.toUpperCase()} payload(s)`);
 }
@@ -1284,7 +1282,6 @@ async function addCustomPayload() {
 async function clearCustomPayloads() {
   if (!confirm("Clear all custom payloads permanently?")) return;
   allData.customPayloads=[];
-  await chrome.storage.local.set({[CUSTOM_PAYLOADS_STORAGE_KEY]:[]});
   await chrome.runtime.sendMessage({type:"SAVE_CUSTOM_PAYLOADS",tabId:currentTabId,payloads:[]});
   renderCustomPayloads(); updateCounts();
   setStatus("Custom payloads cleared");
@@ -1334,6 +1331,8 @@ function esc(str) {
   return String(str||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 }
 function escAttr(str) { return String(str||"").replace(/&/g,"&amp;").replace(/"/g,"&quot;"); }
+// Whitelisted CSS-class suffix from data-derived values (blocks HTML/class injection)
+function safeCls(v) { return String(v||"").toLowerCase().replace(/[^a-z0-9_-]/g,"").slice(0,24); }
 function unesc(str) { return String(str||"").replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"').replace(/&#39;/g,"'"); }
 
 function shortUrl(url) {
@@ -1395,7 +1394,7 @@ async function startActiveScan() {
   if (!toScan.length) { setStatus("No in-scope params to scan — browse the target first"); return; }
 
   const typesSel = document.getElementById("scanTypes")?.value || "all";
-  const allTypes = ["SQLi_ERROR","SQLi_BOOLEAN","SQLi_TIME","XSS","LFI","RFI","SSRF","SSTI","OS_CMD","XXE","OPEN_REDIRECT"];
+  const allTypes = ["SQLi_ERROR","SQLi_BOOLEAN","SQLi_TIME","XSS","Blind_XSS","LFI","RFI","SSRF","SSTI","OS_CMD","XXE","OPEN_REDIRECT"];
   const types = typesSel==="all" ? allTypes : [typesSel];
   const canary = (document.getElementById("scanCanary")?.value || "").trim();
   if (canary) await saveCanary();

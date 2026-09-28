@@ -79,9 +79,16 @@ export async function importSession(tabId, host, session) {
     target: session.target || { host: host || '', wildcard: false, noFilter: false, raw: host || '' },
     savedAt: session.savedAt || Date.now(),
   };
-  for (const c of store.COLLECTIONS) snap[c] = Array.isArray(session[c]) ? session[c] : [];
+  for (const c of store.COLLECTIONS) {
+    snap[c] = (Array.isArray(session[c]) ? session[c] : []).slice(0, TRIMS[c] || 500);
+  }
   const all = await readAll();
   all[host || 'imported'] = snap;
+  const keys = Object.keys(all);
+  if (keys.length > MAX_SESSIONS) {
+    keys.sort((a, b) => (all[a].savedAt || 0) - (all[b].savedAt || 0));
+    for (const k of keys.slice(0, keys.length - MAX_SESSIONS)) delete all[k];
+  }
   await writeAll(all);
   return load(tabId, host || 'imported');
 }

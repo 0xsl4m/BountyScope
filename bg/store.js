@@ -25,19 +25,29 @@ function emptyTab() {
   return t;
 }
 
+const pendingLoads = new Map(); // in-flight ensure() loads (concurrent wake-up dedupe)
+const dropped = new Set();      // tabs removed — ensure() must not resurrect them
+
 export async function ensure(tabId) {
   if (tabId == null || tabId < 0) return null;
+  if (dropped.has(tabId)) return null;
   if (tabs.has(tabId)) return tabs.get(tabId);
-  let saved = null;
-  try {
-    const res = await chrome.storage.local.get(TAB_PREFIX + tabId);
-    saved = res[TAB_PREFIX + tabId];
-  } catch (_) {}
-  const tab = Object.assign(emptyTab(), saved || {});
-  if (!tab.target) tab.target = null;
-  for (const c of COLLECTIONS) if (!Array.isArray(tab[c])) tab[c] = [];
-  tabs.set(tabId, tab);
-  return tab;
+  if (pendingLoads.has(tabId)) return pendingLoads.get(tabId);
+  const p = (async () => {
+    let saved = null;
+    try {
+      const res = await chrome.storage.local.get(TAB_PREFIX + tabId);
+      saved = res[TAB_PREFIX + tabId];
+    } catch (_) {}
+    const tab = Object.assign(emptyTab(), saved || {});
+    if (!tab.target) tab.target = null;
+    for (const c of COLLECTIONS) if (!Array.isArray(tab[c])) tab[c] = [];
+    tabs.set(tabId, tab);
+    pendingLoads.delete(tabId);
+    return tab;
+  })();
+  pendingLoads.set(tabId, p);
+  return p;
 }
 
 export function peek(tabId) { return tabs.get(tabId) || null; }
@@ -81,6 +91,7 @@ export function clearTab(tabId) {
 }
 
 export async function dropTab(tabId) {
+  dropped.add(tabId);
   if (writeTimers.has(tabId)) { clearTimeout(writeTimers.get(tabId)); writeTimers.delete(tabId); }
   tabs.delete(tabId);
   try { await chrome.storage.local.remove(TAB_PREFIX + tabId); } catch (_) {}

@@ -71,6 +71,13 @@ const BS_DETECT = {
     /^[A-Za-z0-9+\/=]{100,}$/m,
   ],
 
+  RFI: [
+    /root:x:0:0:/,
+    /www-data:x:\d+:\d+:/,
+    /\[boot loader\]/i,
+    /\[operating systems\]/i,
+  ],
+
   RCE_CMD: [
     /uid=\d+\([^)]+\)\s+gid=\d+\([^)]+\)/,
     /root:x:0:0:/,

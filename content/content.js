@@ -14,8 +14,11 @@
   };
 
   // ── D1 relay: page_spy (MAIN world) → background ──────────────────────────
+  // Strict type whitelist: a hostile page could otherwise abuse the relay to
+  // inject arbitrary store mutations.
   window.addEventListener('message', (e) => {
     if (e.source !== window || !e.data || e.data.source !== 'bountyscope-spy' || !e.data.type) return;
+    if (e.data.type !== 'ADD_PARAMS' && e.data.type !== 'ADD_WEBSOCKET') return;
     send(e.data.type, e.data.payload || {});
   });
 

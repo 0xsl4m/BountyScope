@@ -68,7 +68,7 @@ export function analyzeJS(code, scriptUrl, baseHost) {
   return { endpoints: [...new Set(endpoints)], secrets, subdomains: [...new Set(subdomains)] };
 }
 
-async function ingest(tabId, findings, sourceUrl) {
+export async function ingestFindings(tabId, findings, sourceUrl) {
   for (const ep of findings.endpoints) {
     let path = ep;
     let host = '';
@@ -111,10 +111,10 @@ export async function handleScanScripts(tabId, urls) {
   for (const url of (urls || []).slice(0, MAX_SCRIPTS_PER_SCAN)) {
     if (!/^https?:/i.test(url)) continue;
     if (!(await scope.isInScope(url, tabId))) continue;
-    const r = await fetchText(url);
+    const r = await fetchText(url, tabId);
     if (!r.ok || !r.text) continue;
     if (!r.contentType || r.contentType.includes('javascript') || r.contentType.includes('text/plain') || /\.js($|\?)/i.test(url)) {
-      await ingest(tabId, analyzeJS(r.text, url, baseHost), url);
+      await ingestFindings(tabId, analyzeJS(r.text, url, baseHost), url);
     }
     await ingestSourceMap(tabId, r.text, url, baseHost);
   }
@@ -127,7 +127,7 @@ async function ingestSourceMap(tabId, code, scriptUrl, baseHost) {
   if (mu.startsWith('data:')) return;
   try { mu = /^https?:/i.test(mu) ? mu : new URL(mu, scriptUrl).href; } catch (_) { return; }
   if (!(await scope.isInScope(mu, tabId))) return;
-  const r = await fetchText(mu);
+  const r = await fetchText(mu, tabId);
   if (!r.ok || !r.text) return;
   let map;
   try { map = JSON.parse(r.text); } catch (_) { return; }
@@ -145,7 +145,7 @@ async function ingestSourceMap(tabId, code, scriptUrl, baseHost) {
   if (Array.isArray(map.sourcesContent)) {
     for (const content of map.sourcesContent) {
       if (typeof content === 'string') {
-        await ingest(tabId, analyzeJS(content, mu, baseHost), mu);
+        await ingestFindings(tabId, analyzeJS(content, mu, baseHost), mu);
       }
     }
   }

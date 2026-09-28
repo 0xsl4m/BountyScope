@@ -53,6 +53,8 @@ async function runActiveScan(params, options, callbacks) {
       for (const payload of BS_PAYLOADS[vtype]) {
         if (payload && typeof payload === 'object' && payload.a) {
           _queue.push({ param, vtype, payload, mode: 'boolean' });
+        } else if (vtype === 'SQLi_TIME') {
+          _queue.push({ param, vtype, payload: String(payload), mode: 'time' });
         } else if (vtype === 'Blind_XSS') {
           _queue.push({ param, vtype, payload: String(payload).replace(/CANARY/g, canary), mode: 'probe', canary });
         } else {
@@ -179,7 +181,9 @@ async function runProbeJob(job, timeout) {
         });
         return;
       }
-      if (ph && resp.finalUrl && resp.finalUrl !== url && resp.finalUrl.includes(ph)) {
+      let leftOrigin = false;
+      try { leftOrigin = new URL(resp.finalUrl).host !== new URL(url).host; } catch (_) {}
+      if (ph && leftOrigin && resp.finalUrl.includes(ph)) {
         reportFinding(param, vtype, payload, {
           evidence: 'Final URL left origin: ' + resp.finalUrl, status,
           url: resp.finalUrl || url, type: 'followed_redirect',

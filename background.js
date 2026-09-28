@@ -5,7 +5,7 @@ import * as store from './bg/store.js';
 import * as scope from './bg/scope.js';
 import * as sessions from './bg/sessions.js';
 import { initCapture, updateBadge, upsertWebSocket } from './bg/capture.js';
-import { fetchText, analyzeJS, handleScanScripts } from './bg/analyzer.js';
+import { fetchText, analyzeJS, handleScanScripts, ingestFindings } from './bg/analyzer.js';
 import { buildParam, classifyEndpoint } from './lib/classify.js';
 
 initCapture();
@@ -44,9 +44,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 // ─── Message router ──────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  const tabId = (typeof msg?.tabId === 'number' && msg.tabId >= 0)
-    ? msg.tabId
-    : (sender.tab?.id ?? -1);
+  // Content-script messages are pinned to their own tab — a page can never spoof
+  // msg.tabId to poison another tab's store.
+  const tabId = sender.tab?.id ?? ((typeof msg?.tabId === 'number' && msg.tabId >= 0) ? msg.tabId : -1);
   route(msg || {}, tabId, sender)
     .then((r) => { try { sendResponse(r ?? { ok: true }); } catch (_) {} })
     .catch((e) => { try { sendResponse({ ok: false, error: e?.message || String(e) }); } catch (_) {} });
@@ -56,7 +56,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 async function route(msg, tabId, sender) {
   const type = msg.type || msg.action;
 
-  if (tabId < 0) return { ok: false, error: 'Invalid tab ID' };
+  // Tab-less messages (the popup sending settings) are the only ones allowed
+  // without a real tab.
+  if (tabId < 0 && type !== 'GET_SETTINGS' && type !== 'SET_SETTINGS') {
+    return { ok: false, error: 'Invalid tab ID' };
+  }
 
   switch (type) {
 
@@ -117,7 +121,8 @@ async function route(msg, tabId, sender) {
         if (url && !/^https?:/i.test(url) && /^https?:/i.test(origin)) {
           try { url = new URL(url, origin).href; } catch (_) {}
         }
-        if (url && /^https?:/i.test(url) && !(await scope.isInScope(url, tabId))) continue;
+        if (!/^https?:/i.test(url)) continue; // relayed captures need an absolute URL to scope-check
+        if (!(await scope.isInScope(url, tabId))) continue;
         const p = buildParam(name, raw.value || '', raw.source || 'URL', url, raw.method || 'GET');
         if (!p) continue;
         store.push(tabId, 'params', p, {
@@ -145,7 +150,8 @@ async function route(msg, tabId, sender) {
           try { const u = new URL(url); path = u.pathname; host = u.hostname; } catch (_) { path = url; }
         }
         if (!path || path.length > 300) continue;
-        if (/^https?:/i.test(url) && !(await scope.isInScope(url, tabId))) continue;
+        if (!/^https?:/i.test(url)) continue; // relayed captures need an absolute URL to scope-check
+        if (!(await scope.isInScope(url, tabId))) continue;
         const item = {
           _key: raw._key || ((host || '') + path),
           path, method: raw.method || 'GET', url: url || path, host,
@@ -165,7 +171,8 @@ async function route(msg, tabId, sender) {
       for (const s of list) {
         if (!s) continue;
         const source = s.source || s.url || '';
-        if (source && /^https?:/i.test(source) && !(await scope.isInScope(source, tabId))) continue;
+        if (!/^https?:/i.test(source)) continue; // need an absolute source to scope-check
+        if (!(await scope.isInScope(source, tabId))) continue;
         const value = String(s.value || '').slice(0, 200);
         if (!value) continue;
         store.push(tabId, 'secrets', {
@@ -178,20 +185,6 @@ async function route(msg, tabId, sender) {
         }, { match: (x, n) => x.value === n.value });
       }
       updateBadge(tabId);
-      return { ok: true };
-    }
-
-    case 'ADD_SUBDOMAINS': {
-      const list = Array.isArray(msg.subdomains) ? msg.subdomains : (Array.isArray(msg.data) ? msg.data : []);
-      await store.ensure(tabId);
-      for (const s of list) {
-        if (!s?.host) continue;
-        store.push(tabId, 'subdomains', {
-          host: String(s.host).toLowerCase(),
-          source: s.source || '',
-          discovered: s.discovered || new Date().toISOString(),
-        }, { match: (x, n) => x.host === n.host });
-      }
       return { ok: true };
     }
 
@@ -258,8 +251,14 @@ async function route(msg, tabId, sender) {
     case 'FETCH_TEXT':
       return fetchText(msg.url, tabId);
 
-    case 'ANALYZE_JS':
-      return { ok: true, findings: analyzeJS(msg.code || '', msg.scriptUrl || '', '') };
+    case 'ANALYZE_JS': {
+      // Ingest inline-script findings into the store (the old flow computed and
+      // then discarded them).
+      const findings = analyzeJS(msg.code || '', msg.scriptUrl || '', '');
+      await ingestFindings(tabId, findings, msg.scriptUrl || '');
+      updateBadge(tabId);
+      return { ok: true };
+    }
 
     default:
       return { ok: false, error: 'Unknown action: ' + type };

@@ -1,491 +1,267 @@
-// ============================================================
-// ReconHawk Pro - Background Service Worker v4.1
-// FIXED: Better scope/target filtering, request body capture,
-//        WebSocket tracking, improved session management
-// ============================================================
+// BountyScope — background service worker (module).
+// Persistent per-tab store (D4), scope engine, merged capture pipeline,
+// message router compatible with the ReconHawk popup API.
+import * as store from './bg/store.js';
+import * as scope from './bg/scope.js';
+import * as sessions from './bg/sessions.js';
+import { initCapture, updateBadge, upsertWebSocket } from './bg/capture.js';
+import { fetchText, analyzeJS, handleScanScripts } from './bg/analyzer.js';
+import { buildParam, classifyEndpoint } from './lib/classify.js';
 
-const store = {
-  requests:{}, params:{}, endpoints:{}, secrets:{}, headers:{},
-  target:{}, payloadResults:{}, fuzzResults:{}, idorResults:{},
-  corsResults:{}, graphqlResults:{}, subdomains:{},
-  customPayloads:{}, websocketConnections:{}, jwtTokens:{}, apiDocs:{}
-};
+initCapture();
 
-// ─── Init tab data ───────────────────────────────────────────
-function initTab(tabId) {
-  if (!store.requests[tabId]) {
-    store.requests[tabId]    = [];
-    store.params[tabId]      = [];
-    store.endpoints[tabId]   = [];
-    store.secrets[tabId]     = [];
-    store.headers[tabId]     = [];
-    store.payloadResults[tabId] = [];
-    store.fuzzResults[tabId] = [];
-    store.idorResults[tabId] = [];
-    store.corsResults[tabId] = [];
-    store.graphqlResults[tabId] = [];
-    store.subdomains[tabId]  = [];
-    store.customPayloads[tabId] = [];
-    store.websocketConnections[tabId] = [];
-    store.jwtTokens[tabId] = [];
-    store.apiDocs[tabId] = [];
-  }
-}
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.alarms.create('bs-snapshot', { periodInMinutes: 5 });
+  store.initSettings().then((s) => scope.setExtraOOS(s.oosExtra || []));
+});
 
-// ─── Scope check - IMPROVED ──────────────────────────────────
-function isInScope(url, tabId) {
-  const target = store.target[tabId];
-  // No target set = capture nothing (require explicit scope)
-  if (!target) return false;
-  // noFilter = capture everything
-  if (target.noFilter) return true;
-  // No host set = capture nothing
-  if (!target.host) return false;
+// Restore settings cache + extra OOS list on every SW wake.
+store.getSettings().then((s) => scope.setExtraOOS(s.oosExtra || []));
 
-  try {
-    const reqHost = new URL(url).hostname.toLowerCase();
-    const targetHost = target.host.toLowerCase();
-
-    if (target.wildcard) {
-      // Wildcard: *.example.com matches sub.example.com AND example.com
-      const base = targetHost.replace(/^\*\./, "");
-      return reqHost === base || reqHost.endsWith("." + base);
-    }
-    // Exact match only
-    return reqHost === targetHost;
-  } catch(e) { return false; }
-}
-
-// ─── Check if a stored item's URL is in scope ────────────────
-function itemInScope(itemUrl, tabId) {
-  if (!itemUrl) return false;
-  return isInScope(itemUrl, tabId);
-}
-
-// ─── Request interception ────────────────────────────────────
-chrome.webRequest.onBeforeSendHeaders.addListener(
-  (details) => {
-    const tabId = details.tabId;
-    if (tabId < 0) return;
-    initTab(tabId);
-    if (!isInScope(details.url, tabId)) return;
+chrome.alarms.onAlarm.addListener((a) => {
+  if (a.name !== 'bs-snapshot') return;
+  (async () => {
     try {
-      const url = new URL(details.url);
-      url.searchParams.forEach((value, key) => {
-        if (!store.params[tabId].find(p => p.key===key && p.url===details.url))
-          store.params[tabId].push({ key, value, source:"URL", url:details.url });
-      });
-      const epKey = url.hostname + url.pathname;
-      if (url.pathname && url.pathname !== "/" && !store.endpoints[tabId].find(e => e._key===epKey)) {
-        store.endpoints[tabId].push({
-          _key:epKey, path:url.pathname, method:details.method,
-          url:details.url, host:url.hostname, type:detectEndpointType(url.pathname)
+      const activeTabs = await chrome.tabs.query({ active: true });
+      for (const t of activeTabs) {
+        const tab = await store.ensure(t.id);
+        if (tab && (tab.target?.host || tab.target?.noFilter)) await sessions.saveSession(t.id);
+      }
+    } catch (_) {}
+  })();
+});
+
+// Tab closed → snapshot a session if a target was set, then drop all data.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  (async () => {
+    try {
+      const tab = await store.ensure(tabId);
+      if (tab && (tab.target?.host || tab.target?.noFilter)) await sessions.saveSession(tabId);
+    } catch (_) {}
+    await store.dropTab(tabId);
+  })();
+});
+
+// ─── Message router ──────────────────────────────────────────────────────────
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  const tabId = (typeof msg?.tabId === 'number' && msg.tabId >= 0)
+    ? msg.tabId
+    : (sender.tab?.id ?? -1);
+  route(msg || {}, tabId, sender)
+    .then((r) => { try { sendResponse(r ?? { ok: true }); } catch (_) {} })
+    .catch((e) => { try { sendResponse({ ok: false, error: e?.message || String(e) }); } catch (_) {} });
+  return true; // every route() path responds, so the channel never hangs
+});
+
+async function route(msg, tabId, sender) {
+  const type = msg.type || msg.action;
+
+  if (tabId < 0) return { ok: false, error: 'Invalid tab ID' };
+
+  switch (type) {
+
+    case 'GET_DATA': {
+      const tab = await store.ensure(tabId);
+      const out = { ok: true, dataVersion: tab.dataVersion || 0, target: tab.target || null };
+      for (const c of store.COLLECTIONS) out[c] = tab[c];
+      return out;
+    }
+
+    case 'SET_TARGET': {
+      const tab = await store.ensure(tabId);
+      tab.target = msg.target || null;
+      store.clearTab(tabId);
+      return { ok: true };
+    }
+
+    case 'CLEAR_DATA': {
+      await store.ensure(tabId);
+      store.clearTab(tabId);
+      updateBadge(tabId);
+      return { ok: true };
+    }
+
+    case 'GET_SETTINGS':
+      return { ok: true, settings: await store.getSettings() };
+
+    case 'SET_SETTINGS': {
+      const s = await store.setSettings(msg.settings || {});
+      scope.setExtraOOS(s.oosExtra || []);
+      return { ok: true };
+    }
+
+    case 'SAVE_SESSION':
+      return { ok: await sessions.saveSession(tabId) };
+
+    case 'GET_SESSIONS':
+      return { ok: true, sessions: await sessions.list() };
+
+    case 'LOAD_SESSION':
+      return { ok: await sessions.load(tabId, msg.host) };
+
+    case 'DELETE_SESSION':
+      await sessions.remove(msg.host);
+      return { ok: true };
+
+    case 'IMPORT_SESSION':
+      return { ok: await sessions.importSession(tabId, msg.host, msg.session) };
+
+    case 'ADD_PARAMS': {
+      const origin = sender.origin || sender.url || '';
+      const list = Array.isArray(msg.params) ? msg.params : (Array.isArray(msg.data) ? msg.data : []);
+      await store.ensure(tabId);
+      for (const raw of list) {
+        const name = raw?.key || raw?.name;
+        if (!name) continue;
+        let url = raw.url || '';
+        if (url && !/^https?:/i.test(url) && /^https?:/i.test(origin)) {
+          try { url = new URL(url, origin).href; } catch (_) {}
+        }
+        if (url && /^https?:/i.test(url) && !(await scope.isInScope(url, tabId))) continue;
+        const p = buildParam(name, raw.value || '', raw.source || 'URL', url, raw.method || 'GET');
+        if (!p) continue;
+        store.push(tabId, 'params', p, {
+          match: (x, n) => `${x.key}|${x.source}|${(x.url || '').split('?')[0]}` ===
+                           `${n.key}|${n.source}|${(n.url || '').split('?')[0]}`,
         });
       }
-      if (store.requests[tabId].length < 500)
-        store.requests[tabId].push({
-          id:details.requestId, url:details.url, method:details.method,
-          timestamp:Date.now(), type:details.type,
-          headers: details.requestHeaders ? headersToObj(details.requestHeaders) : {}
-        });
-    } catch(e) {}
-  },
-  { urls:["<all_urls>"] }, ["requestHeaders"]
-);
-
-// ─── Response headers ────────────────────────────────────────
-chrome.webRequest.onHeadersReceived.addListener(
-  (details) => {
-    const tabId = details.tabId;
-    if (tabId < 0) return;
-    initTab(tabId);
-    if (!isInScope(details.url, tabId)) return;
-    if (!["main_frame","xmlhttprequest","fetch","sub_frame"].includes(details.type)) return;
-    try {
-      const hostKey = new URL(details.url).hostname;
-      if (!store.headers[tabId].find(h => h._host===hostKey))
-        store.headers[tabId].push(...analyzeHeaders(details.responseHeaders, details.url, hostKey));
-    } catch(e) {}
-  },
-  { urls:["<all_urls>"] }, ["responseHeaders"]
-);
-
-// ─── Helper: headers array to object ─────────────────────────
-function headersToObj(headersArr) {
-  if (!headersArr) return {};
-  const obj = {};
-  headersArr.forEach(h => { obj[h.name.toLowerCase()] = h.value; });
-  return obj;
-}
-
-function detectEndpointType(path) {
-  if (path.match(/\.(php|asp|aspx|jsp|py|rb|go|cfm)$/i)) return "SERVER-SIDE";
-  if (path.match(/\/api\/|\/v\d+\//i)) return "API";
-  if (path.match(/graphql/i)) return "GRAPHQL";
-  if (path.match(/\.(json|xml|yaml)$/i)) return "DATA";
-  if (path.match(/\.(js|ts|mjs)$/i)) return "JS";
-  if (path.match(/admin|panel|dashboard|login|auth|manage|config|setup|phpmy|wp-admin/i)) return "SENSITIVE";
-  if (path.match(/upload|file|import|export|download/i)) return "FILE";
-  return "PAGE";
-}
-
-function analyzeHeaders(headers, url, hostKey) {
-  if (!headers) return [];
-  const checks = {
-    "x-frame-options":           { risk:"MEDIUM", desc:"Clickjacking protection" },
-    "content-security-policy":   { risk:"HIGH",   desc:"XSS protection policy" },
-    "strict-transport-security": { risk:"HIGH",   desc:"HTTPS enforcement (HSTS)" },
-    "x-content-type-options":    { risk:"LOW",    desc:"MIME sniffing protection" },
-    "x-xss-protection":          { risk:"MEDIUM", desc:"Browser XSS filter" },
-    "referrer-policy":           { risk:"LOW",    desc:"Referrer information control" },
-    "permissions-policy":        { risk:"LOW",    desc:"Browser feature permissions" },
-    "server":                    { risk:"INFO",   desc:"Server technology disclosure" },
-    "x-powered-by":              { risk:"INFO",   desc:"Technology stack disclosure" },
-    "access-control-allow-origin":{ risk:"HIGH",  desc:"CORS policy" },
-    "set-cookie":                { risk:"MEDIUM", desc:"Cookie security flags" }
-  };
-  const map = {};
-  headers.forEach(h => { map[h.name.toLowerCase()] = h.value; });
-  return Object.entries(checks).map(([header, info]) => ({
-    _host:hostKey, url, header,
-    value: map[header] || "MISSING",
-    present: !!map[header],
-    risk: map[header] ? "OK" : info.risk,
-    desc: info.desc
-  }));
-}
-
-// ─── Storage helpers ─────────────────────────────────────────
-const STORAGE_KEY = "reconhawk_sessions";
-
-async function saveSession(tabId) {
-  const target = store.target[tabId];
-  if (!target || (!target.host && !target.noFilter)) return;
-  const key = target.noFilter ? "__all__" : target.host;
-  try {
-    const existing = await chrome.storage.local.get(STORAGE_KEY);
-    const sessions = existing[STORAGE_KEY] || {};
-    sessions[key] = {
-      target: store.target[tabId],
-      params: store.params[tabId]      || [],
-      endpoints: store.endpoints[tabId] || [],
-      secrets: store.secrets[tabId]    || [],
-      requests: (store.requests[tabId] || []).slice(-100),
-      headers: store.headers[tabId]    || [],
-      payloadResults: store.payloadResults[tabId] || [],
-      fuzzResults: store.fuzzResults[tabId]       || [],
-      idorResults: store.idorResults[tabId]       || [],
-      corsResults: store.corsResults[tabId]       || [],
-      graphqlResults: store.graphqlResults[tabId] || [],
-      subdomains: store.subdomains[tabId]         || [],
-      customPayloads: store.customPayloads[tabId]  || [],
-      websocketConnections: store.websocketConnections[tabId] || [],
-      jwtTokens: store.jwtTokens[tabId]            || [],
-      apiDocs: store.apiDocs[tabId]                || [],
-      savedAt: Date.now()
-    };
-    const keys = Object.keys(sessions);
-    if (keys.length > 20) {
-      const oldest = keys.sort((a,b) => (sessions[a].savedAt||0) - (sessions[b].savedAt||0))[0];
-      delete sessions[oldest];
+      updateBadge(tabId);
+      return { ok: true };
     }
-    await chrome.storage.local.set({ [STORAGE_KEY]: sessions });
-  } catch(e) {}
-}
 
-async function loadSession(tabId, host) {
-  try {
-    const existing = await chrome.storage.local.get(STORAGE_KEY);
-    const sessions = existing[STORAGE_KEY] || {};
-    const s = sessions[host];
-    if (!s) return false;
-    initTab(tabId);
-    store.target[tabId]        = s.target;
-    store.params[tabId]        = s.params        || [];
-    store.endpoints[tabId]     = s.endpoints     || [];
-    store.secrets[tabId]       = s.secrets       || [];
-    store.requests[tabId]      = s.requests      || [];
-    store.headers[tabId]       = s.headers       || [];
-    store.payloadResults[tabId]= s.payloadResults|| [];
-    store.fuzzResults[tabId]   = s.fuzzResults   || [];
-    store.idorResults[tabId]   = s.idorResults   || [];
-    store.corsResults[tabId]   = s.corsResults   || [];
-    store.graphqlResults[tabId]= s.graphqlResults|| [];
-    store.subdomains[tabId]    = s.subdomains    || [];
-    store.customPayloads[tabId]= s.customPayloads|| [];
-    store.websocketConnections[tabId] = s.websocketConnections || [];
-    store.jwtTokens[tabId]     = s.jwtTokens     || [];
-    store.apiDocs[tabId]       = s.apiDocs       || [];
-    return true;
-  } catch(e) { return false; }
-}
-
-// Auto-save every 10 seconds for active tabs
-setInterval(async () => {
-  const tabs = await chrome.tabs.query({ active:true });
-  for (const tab of tabs) {
-    if (store.target[tab.id]?.host || store.target[tab.id]?.noFilter) saveSession(tab.id);
-  }
-}, 10000);
-
-// ─── Message handler ─────────────────────────────────────────
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  const tabId = (msg.tabId >= 0) ? msg.tabId : (sender.tab?.id ?? -1);
-  if (tabId < 0) {
-    sendResponse({ ok: false, error: "Invalid tab ID" });
-    return true;
-  }
-  switch (msg.type) {
-
-    case "GET_DATA":
-      initTab(tabId);
-      sendResponse({
-        params:         store.params[tabId]         || [],
-        endpoints:      store.endpoints[tabId]      || [],
-        secrets:        store.secrets[tabId]        || [],
-        requests:       store.requests[tabId]       || [],
-        headers:        store.headers[tabId]        || [],
-        payloadResults: store.payloadResults[tabId] || [],
-        fuzzResults:    store.fuzzResults[tabId]    || [],
-        idorResults:    store.idorResults[tabId]    || [],
-        corsResults:    store.corsResults[tabId]    || [],
-        graphqlResults: store.graphqlResults[tabId] || [],
-        subdomains:     store.subdomains[tabId]     || [],
-        customPayloads: store.customPayloads[tabId] || [],
-        websocketConnections: store.websocketConnections[tabId] || [],
-        jwtTokens:      store.jwtTokens[tabId]      || [],
-        apiDocs:        store.apiDocs[tabId]        || [],
-        target:         store.target[tabId]         || null
-      });
-      break;
-
-    case "GET_SESSIONS":
-      chrome.storage.local.get(STORAGE_KEY).then(r => {
-        const sessions = r[STORAGE_KEY] || {};
-        const list = Object.entries(sessions).map(([host, s]) => ({
-          host, savedAt: s.savedAt,
-          counts: { params: s.params?.length||0, secrets: s.secrets?.length||0, endpoints: s.endpoints?.length||0 }
-        })).sort((a,b)=>b.savedAt-a.savedAt);
-        sendResponse({ sessions: list });
-      });
-      return true;
-
-    case "LOAD_ALL_SESSIONS":
-      chrome.storage.local.get(STORAGE_KEY).then(r => {
-        const sessions = r[STORAGE_KEY] || {};
-        const list = Object.entries(sessions).map(([host, s]) => ({
-          host, savedAt: s.savedAt,
-          counts: { params: s.params?.length||0, secrets: s.secrets?.length||0, endpoints: s.endpoints?.length||0 }
-        })).sort((a,b)=>b.savedAt-a.savedAt);
-        sendResponse({ sessions: list });
-      });
-      return true;
-
-    case "IMPORT_SESSION":
-      (async () => {
-        try {
-          const host = msg.host || "imported";
-          const existing = await chrome.storage.local.get(STORAGE_KEY);
-          const sessions = existing[STORAGE_KEY] || {};
-          sessions[host] = msg.session;
-          await chrome.storage.local.set({ [STORAGE_KEY]: sessions });
-          const ok = await loadSession(tabId, host);
-          sendResponse({ ok });
-        } catch(e) {
-          sendResponse({ ok: false, error: e.message });
+    case 'ADD_ENDPOINTS': {
+      const origin = sender.origin || sender.url || '';
+      const list = Array.isArray(msg.endpoints) ? msg.endpoints : (Array.isArray(msg.data) ? msg.data : []);
+      await store.ensure(tabId);
+      for (const raw of list) {
+        if (!raw) continue;
+        let url = raw.url || raw.path || '';
+        if (url && !/^https?:/i.test(url) && /^https?:/i.test(origin)) {
+          try { url = new URL(url, origin).href; } catch (_) {}
         }
-      })();
-      return true;
-
-    case "LOAD_SESSION":
-      loadSession(tabId, msg.host).then(ok => sendResponse({ ok }));
-      return true;
-
-    case "DELETE_SESSION":
-      chrome.storage.local.get(STORAGE_KEY).then(r => {
-        const sessions = r[STORAGE_KEY] || {};
-        delete sessions[msg.host];
-        chrome.storage.local.set({ [STORAGE_KEY]: sessions }).then(() => sendResponse({ ok:true }));
-      });
-      return true;
-
-    case "SET_TARGET":
-      store.target[tabId] = msg.target;
-      // Clear all data when target changes
-      store.requests[tabId]=[]; store.params[tabId]=[];
-      store.endpoints[tabId]=[]; store.secrets[tabId]=[];
-      store.headers[tabId]=[]; store.payloadResults[tabId]=[];
-      store.fuzzResults[tabId]=[]; store.idorResults[tabId]=[];
-      store.corsResults[tabId]=[]; store.graphqlResults[tabId]=[];
-      store.subdomains[tabId]=[]; store.customPayloads[tabId]=[];
-      store.websocketConnections[tabId]=[]; store.jwtTokens[tabId]=[];
-      store.apiDocs[tabId]=[];
-      sendResponse({ ok:true });
-      break;
-
-    case "ADD_SECRETS":
-      initTab(tabId);
-      msg.secrets.forEach(s => {
-        // Only add if in scope
-        if (s.source && !itemInScope(s.source, tabId)) return;
-        if (!store.secrets[tabId].find(x=>x.value===s.value)) store.secrets[tabId].push(s);
-      });
-      sendResponse({ ok:true });
-      break;
-
-    case "ADD_PARAMS":
-      initTab(tabId);
-      msg.params.forEach(p => {
-        // Only add if URL is in scope
-        if (p.url && !itemInScope(p.url, tabId)) return;
-        if (!store.params[tabId].find(x=>x.key===p.key&&x.source===p.source&&x.url===p.url))
-          store.params[tabId].push(p);
-      });
-      sendResponse({ ok:true });
-      break;
-
-    case "ADD_ENDPOINTS":
-      initTab(tabId);
-      msg.endpoints.forEach(e => {
-        // Only add if URL is in scope
-        if (e.url && e.url.startsWith("http") && !itemInScope(e.url, tabId)) return;
-        if (!store.endpoints[tabId].find(x=>x._key===e._key||x.path===e.path))
-          store.endpoints[tabId].push(e);
-      });
-      sendResponse({ ok:true });
-      break;
-
-    case "ADD_PAYLOAD_RESULT":
-      initTab(tabId);
-      store.payloadResults[tabId].push(msg.result);
-      sendResponse({ ok:true });
-      break;
-
-    case "ADD_FUZZ_RESULT":
-      initTab(tabId);
-      store.fuzzResults[tabId].push(msg.result);
-      sendResponse({ ok:true });
-      break;
-
-    case "ADD_IDOR_RESULT":
-      initTab(tabId);
-      store.idorResults[tabId].push(msg.result);
-      sendResponse({ ok:true });
-      break;
-
-    case "ADD_CORS_RESULT":
-      initTab(tabId);
-      store.corsResults[tabId].push(msg.result);
-      sendResponse({ ok:true });
-      break;
-
-    case "ADD_GRAPHQL_RESULT":
-      initTab(tabId);
-      store.graphqlResults[tabId].push(msg.result);
-      sendResponse({ ok:true });
-      break;
-
-    case "ADD_SUBDOMAINS":
-      initTab(tabId);
-      msg.subdomains.forEach(s => {
-        if (!store.subdomains[tabId].find(x=>x.host===s.host))
-          store.subdomains[tabId].push(s);
-      });
-      sendResponse({ ok:true });
-      break;
-
-    case "SAVE_SESSION":
-      saveSession(tabId).then(()=>sendResponse({ok:true}));
-      return true;
-
-    case "CLEAR_DATA":
-      store.requests[tabId]=[]; store.params[tabId]=[];
-      store.endpoints[tabId]=[]; store.secrets[tabId]=[];
-      store.headers[tabId]=[]; store.payloadResults[tabId]=[];
-      store.fuzzResults[tabId]=[]; store.idorResults[tabId]=[];
-      store.corsResults[tabId]=[]; store.graphqlResults[tabId]=[];
-      store.subdomains[tabId]=[]; store.customPayloads[tabId]=[];
-      store.websocketConnections[tabId]=[]; store.jwtTokens[tabId]=[];
-      store.apiDocs[tabId]=[];
-      sendResponse({ ok:true });
-      break;
-
-    case "SAVE_CUSTOM_PAYLOADS":
-      initTab(tabId);
-      store.customPayloads[tabId] = msg.payloads || [];
-      sendResponse({ ok:true });
-      break;
-
-    case "ADD_WEBSOCKET":
-      initTab(tabId);
-      if (!store.websocketConnections[tabId].find(ws => ws.url === msg.connection.url))
-        store.websocketConnections[tabId].push(msg.connection);
-      sendResponse({ ok:true });
-      break;
-
-    case "ADD_JWT_TOKEN":
-      initTab(tabId);
-      if (!store.jwtTokens[tabId].find(t => t.token === msg.token.token))
-        store.jwtTokens[tabId].push(msg.token);
-      sendResponse({ ok:true });
-      break;
-
-    case "ADD_API_DOC":
-      initTab(tabId);
-      if (!store.apiDocs[tabId].find(d => d.url === msg.doc.url))
-        store.apiDocs[tabId].push(msg.doc);
-      sendResponse({ ok:true });
-      break;
-
-    // NEW: Purge out-of-scope data after target change
-    case "PURGE_OUT_OF_SCOPE":
-      initTab(tabId);
-      store.params[tabId]    = store.params[tabId].filter(p => !p.url || itemInScope(p.url, tabId));
-      store.endpoints[tabId] = store.endpoints[tabId].filter(e => !e.url || !e.url.startsWith("http") || itemInScope(e.url, tabId));
-      store.secrets[tabId]   = store.secrets[tabId].filter(s => !s.source || itemInScope(s.source, tabId));
-      store.requests[tabId]  = store.requests[tabId].filter(r => itemInScope(r.url, tabId));
-      store.headers[tabId]   = store.headers[tabId].filter(h => !h.url || itemInScope(h.url, tabId));
-      store.subdomains[tabId]= store.subdomains[tabId].filter(s => {
-        if (!s.source) return true;
-        return itemInScope(s.source, tabId);
-      });
-      sendResponse({ ok:true });
-      break;
-  }
-  return true;
-});
-
-// ─── Tab navigation ──────────────────────────────────────────
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === "loading") {
-    const target = store.target[tabId];
-    if (target?.host && tab.url) {
-      try {
-        const newHost = new URL(tab.url).hostname.toLowerCase();
-        const base = target.host.toLowerCase().replace(/^\*\./,"");
-        if (newHost===base || newHost.endsWith("."+base)) return;
-      } catch(e) {}
+        let path = raw.path || '';
+        let host = raw.host || '';
+        if (!path && /^https?:/i.test(url)) {
+          try { const u = new URL(url); path = u.pathname; host = u.hostname; } catch (_) { path = url; }
+        }
+        if (!path || path.length > 300) continue;
+        if (/^https?:/i.test(url) && !(await scope.isInScope(url, tabId))) continue;
+        const item = {
+          _key: raw._key || ((host || '') + path),
+          path, method: raw.method || 'GET', url: url || path, host,
+          type: raw.type || classifyEndpoint(path),
+        };
+        store.push(tabId, 'endpoints', item, {
+          match: (x, n) => x._key === n._key || x.path === n.path,
+        });
+      }
+      updateBadge(tabId);
+      return { ok: true };
     }
-    if (target?.noFilter) return; // Don't clear on navigation if no-filter scope
-    store.requests[tabId]=[]; store.params[tabId]=[];
-    store.endpoints[tabId]=[]; store.secrets[tabId]=[];
-    store.headers[tabId]=[]; store.payloadResults[tabId]=[];
-    store.fuzzResults[tabId]=[]; store.idorResults[tabId]=[];
-    store.corsResults[tabId]=[]; store.graphqlResults[tabId]=[];
-    store.subdomains[tabId]=[]; store.customPayloads[tabId]=[];
-    store.websocketConnections[tabId]=[]; store.jwtTokens[tabId]=[];
-    store.apiDocs[tabId]=[];
-  }
-});
 
-chrome.tabs.onRemoved.addListener((tabId) => {
-  if (store.target[tabId]?.host || store.target[tabId]?.noFilter) saveSession(tabId);
-  delete store.requests[tabId]; delete store.params[tabId];
-  delete store.endpoints[tabId]; delete store.secrets[tabId];
-  delete store.headers[tabId]; delete store.payloadResults[tabId];
-  delete store.fuzzResults[tabId]; delete store.idorResults[tabId];
-  delete store.corsResults[tabId]; delete store.graphqlResults[tabId];
-  delete store.subdomains[tabId]; delete store.customPayloads[tabId];
-  delete store.websocketConnections[tabId]; delete store.jwtTokens[tabId];
-  delete store.apiDocs[tabId]; delete store.target[tabId];
-});
+    case 'ADD_SECRETS': {
+      const list = Array.isArray(msg.secrets) ? msg.secrets : (Array.isArray(msg.data) ? msg.data : []);
+      await store.ensure(tabId);
+      for (const s of list) {
+        if (!s) continue;
+        const source = s.source || s.url || '';
+        if (source && /^https?:/i.test(source) && !(await scope.isInScope(source, tabId))) continue;
+        const value = String(s.value || '').slice(0, 200);
+        if (!value) continue;
+        store.push(tabId, 'secrets', {
+          name: s.name || s.category || 'Secret', value,
+          risk: s.risk || s.severity || 'HIGH',
+          severity: s.severity || s.risk || 'HIGH',
+          category: s.category || s.name || 'Secret',
+          context: String(s.context || '').slice(0, 250),
+          source, url: source, timestamp: Date.now(),
+        }, { match: (x, n) => x.value === n.value });
+      }
+      updateBadge(tabId);
+      return { ok: true };
+    }
+
+    case 'ADD_SUBDOMAINS': {
+      const list = Array.isArray(msg.subdomains) ? msg.subdomains : (Array.isArray(msg.data) ? msg.data : []);
+      await store.ensure(tabId);
+      for (const s of list) {
+        if (!s?.host) continue;
+        store.push(tabId, 'subdomains', {
+          host: String(s.host).toLowerCase(),
+          source: s.source || '',
+          discovered: s.discovered || new Date().toISOString(),
+        }, { match: (x, n) => x.host === n.host });
+      }
+      return { ok: true };
+    }
+
+    case 'ADD_WEBSOCKET': {
+      const conn = msg.connection || msg.data?.connection;
+      await upsertWebSocket(tabId, conn);
+      return { ok: true };
+    }
+
+    case 'ADD_PAYLOAD_RESULT':
+    case 'ADD_FUZZ_RESULT':
+    case 'ADD_IDOR_RESULT':
+    case 'ADD_CORS_RESULT':
+    case 'ADD_GRAPHQL_RESULT':
+    case 'ADD_SCAN_RESULT': {
+      const map = {
+        ADD_PAYLOAD_RESULT: 'payloadResults', ADD_FUZZ_RESULT: 'fuzzResults',
+        ADD_IDOR_RESULT: 'idorResults', ADD_CORS_RESULT: 'corsResults',
+        ADD_GRAPHQL_RESULT: 'graphqlResults', ADD_SCAN_RESULT: 'scanResults',
+      };
+      const result = msg.result || msg.data;
+      if (!result) return { ok: true };
+      await store.ensure(tabId);
+      result.timestamp = result.timestamp || Date.now();
+      const dedupe = {
+        ADD_CORS_RESULT: (x, n) => x.url === n.url && x.origin === n.origin,
+        ADD_GRAPHQL_RESULT: (x, n) => x.url === n.url && x.name === n.name,
+        ADD_SCAN_RESULT: (x, n) => x.key === n.key,
+      }[type];
+      store.push(tabId, map[type], result, dedupe ? { match: dedupe } : {});
+      updateBadge(tabId);
+      return { ok: true };
+    }
+
+    case 'ADD_JWT_TOKEN': {
+      const t = msg.token || msg.data;
+      if (!t?.token) return { ok: true };
+      await store.ensure(tabId);
+      store.push(tabId, 'jwtTokens', t, { match: (x, n) => x.token === n.token });
+      return { ok: true };
+    }
+
+    case 'ADD_API_DOC': {
+      const d = msg.doc || msg.data;
+      if (!d?.url) return { ok: true };
+      await store.ensure(tabId);
+      store.push(tabId, 'apiDocs', d, { match: (x, n) => x.url === n.url });
+      return { ok: true };
+    }
+
+    case 'SAVE_CUSTOM_PAYLOADS': {
+      const payloads = Array.isArray(msg.payloads) ? msg.payloads : [];
+      await store.setSettings({ customPayloads: payloads });
+      const tab = await store.ensure(tabId);
+      tab.customPayloads = payloads;
+      store.markDirty(tabId);
+      return { ok: true };
+    }
+
+    case 'SCAN_SCRIPTS':
+      await handleScanScripts(tabId, msg.urls || []);
+      return { ok: true };
+
+    case 'FETCH_TEXT':
+      return fetchText(msg.url, tabId);
+
+    case 'ANALYZE_JS':
+      return { ok: true, findings: analyzeJS(msg.code || '', msg.scriptUrl || '', '') };
+
+    default:
+      return { ok: false, error: 'Unknown action: ' + type };
+  }
+}

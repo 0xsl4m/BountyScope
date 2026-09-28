@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>ReconHawk Pro</title>
+<title>BountyScope</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
 :root{
@@ -324,18 +324,18 @@ tr:hover .cbtn{opacity:1;}
 <div id="targetModal">
   <div class="modal-box">
     <div class="modal-title">🎯 Set Target Scope</div>
-    <div class="modal-sub">تحديد التارجت يمنع ظهور نتايج out-of-scope</div>
+    <div class="modal-sub">Setting a target keeps out-of-scope results out of your view</div>
     <div class="modal-row">
       <div class="modal-label">Target Host</div>
       <input id="targetInput" placeholder="example.com  or  *.example.com" />
-      <div class="modal-hint">Exact: <code>example.com</code> &nbsp;|&nbsp; Wildcard: <code>*.example.com</code> &nbsp;|&nbsp; اتركه فاضي لكل الدومينز</div>
+      <div class="modal-hint">Exact: <code>example.com</code> &nbsp;|&nbsp; Wildcard: <code>*.example.com</code> &nbsp;|&nbsp; Leave empty for all domains (passive only)</div>
     </div>
     <div class="modal-row">
       <div class="modal-label">Scope Type</div>
       <div class="scope-opts">
-        <div class="scope-opt selected" id="scopeExact"><div class="scope-opt-title">Exact</div><div class="scope-opt-sub">example.com فقط</div></div>
+        <div class="scope-opt selected" id="scopeExact"><div class="scope-opt-title">Exact</div><div class="scope-opt-sub">example.com only</div></div>
         <div class="scope-opt" id="scopeWildcard"><div class="scope-opt-title">Wildcard ✦</div><div class="scope-opt-sub">*.example.com + root</div></div>
-        <div class="scope-opt" id="scopeNone"><div class="scope-opt-title">No Filter</div><div class="scope-opt-sub">كل حاجة</div></div>
+        <div class="scope-opt" id="scopeNone"><div class="scope-opt-title">No Filter</div><div class="scope-opt-sub">everything (passive only)</div></div>
       </div>
     </div>
     <div class="modal-btns">
@@ -362,10 +362,10 @@ tr:hover .cbtn{opacity:1;}
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div class="header">
   <div class="logo">
-    <div class="logo-icon">🦅</div>
+    <div class="logo-icon">🎯</div>
     <div>
-      <div class="logo-name">ReconHawk <span style="color:var(--dim);font-weight:400">Pro</span></div>
-      <div class="logo-ver">V4.1</div>
+      <div class="logo-name">Bounty<span style="color:var(--dim);font-weight:400">Scope</span></div>
+      <div class="logo-ver">v1.0.0</div>
     </div>
   </div>
 
@@ -566,7 +566,7 @@ tr:hover .cbtn{opacity:1;}
       <div class="no-scope-warn" id="noScopeWarn">
         <div class="warn-icon">🎯</div>
         <div class="warn-title">No Target Scope Set</div>
-        <div class="warn-sub">بدون تحديد التارجت، الأداة مش هتعرف تفلتر النتايج ومش هتمسك أي بيانات.<br>حدد التارجت الأول عشان تشوف النتايج.</div>
+        <div class="warn-sub">Without a target, BountyScope captures nothing and active testing stays disabled.<br>Set your target first to start collecting results.</div>
         <button class="warn-btn" id="setTargetFromWarn">🎯 Set Target Now</button>
       </div>
 

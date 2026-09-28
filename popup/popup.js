@@ -103,6 +103,7 @@ function initEventListeners() {
     // History modal
     document.getElementById("closeHistory")?.addEventListener("click", closeHistory);
     document.getElementById("historyModal")?.addEventListener("click", e => { if(e.target===document.getElementById("historyModal")) closeHistory(); });
+    document.getElementById("sessionList")?.addEventListener("click", onSessionListClick);
 
     // Tabs
     ["params","endpoints","secrets","reflect","requests","headers",
@@ -180,10 +181,20 @@ async function initExtension() {
   }
 }
 
+let lastDataVersion = null;
+
 async function loadData() {
   try {
     const resp = await chrome.runtime.sendMessage({ type:"GET_DATA", tabId:currentTabId });
-    if (resp) { allData=resp; renderActive(); updateCounts(); updateTargetUI(); updateNoScopeWarning(); }
+    if (resp) {
+      // Re-render only when the background data actually changed (D13 fix — the
+      // old code re-rendered every 2.5s and reset selection/filters mid-use).
+      const changed = lastDataVersion === null || resp.dataVersion !== lastDataVersion;
+      lastDataVersion = resp.dataVersion;
+      allData = resp;
+      updateTargetUI(); updateNoScopeWarning();
+      if (changed) { renderActive(); updateCounts(); }
+    }
   } catch(_) {}
 }
 
@@ -333,24 +344,27 @@ async function openHistory() {
       <span class="session-del" data-del="${escAttr(s.host)}" title="Delete session">✕</span>
     </div>`;
   }).join("");
+}
 
-  list.addEventListener("click", async e => {
-    const del = e.target.closest("[data-del]");
-    const item = e.target.closest(".session-item");
-    if (del) {
-      e.stopPropagation();
-      const host = del.getAttribute("data-del");
-      await chrome.runtime.sendMessage({ type:"DELETE_SESSION", tabId:currentTabId, host });
-      del.closest(".session-item").remove();
-      setStatus("Deleted: "+host);
-    } else if (item) {
-      const host = item.getAttribute("data-host");
-      const ok = await chrome.runtime.sendMessage({ type:"LOAD_SESSION", tabId:currentTabId, host });
-      closeHistory();
-      await loadData();
-      setStatus(ok?.ok ? "✓ Session loaded: "+host : "Session not found");
-    }
-  }, { once:true });
+// One delegated listener for the session list (D9 fix — the old code attached a
+// fresh {once:true} listener on every open, so handlers stacked up and fired
+// multiple times per click).
+async function onSessionListClick(e) {
+  const del = e.target.closest("[data-del]");
+  const item = e.target.closest(".session-item");
+  if (del) {
+    e.stopPropagation();
+    const host = del.getAttribute("data-del");
+    await chrome.runtime.sendMessage({ type:"DELETE_SESSION", tabId:currentTabId, host });
+    del.closest(".session-item").remove();
+    setStatus("Deleted: "+host);
+  } else if (item) {
+    const host = item.getAttribute("data-host");
+    const ok = await chrome.runtime.sendMessage({ type:"LOAD_SESSION", tabId:currentTabId, host });
+    closeHistory();
+    await loadData();
+    setStatus(ok?.ok ? "✓ Session loaded: "+host : "Session not found");
+  }
 }
 
 function closeHistory() { document.getElementById("historyModal")?.classList.remove("open"); }
@@ -412,7 +426,7 @@ async function startScan() {
   let prog=0;
   const iv=setInterval(()=>{ prog=Math.min(prog+Math.random()*12,88); bar.style.width=prog+"%"; },200);
   try {
-    await chrome.scripting.executeScript({ target:{tabId:currentTabId}, files:["content.js"] });
+    await chrome.scripting.executeScript({ target:{tabId:currentTabId}, files:["content/content.js"] });
     await sleep(200);
     try { await chrome.tabs.sendMessage(currentTabId,{type:"SCAN_NOW"}); } catch(_) {}
     await sleep(2000);
@@ -437,7 +451,7 @@ async function clearData() {
 // ─── Export ──────────────────────────────────────────────────
 function exportData() {
   const t=allData.target;
-  const report={ tool:"ReconHawk Pro v4.1", target:t?(t.wildcard?"*."+t.host:t.host||"all"):"unscoped",
+  const report={ tool:"BountyScope v1.0", target:t?(t.wildcard?"*."+t.host:t.host||"all"):"unscoped",
     timestamp:new Date().toISOString(),
     summary:{ params:allData.params.length, endpoints:allData.endpoints.length, secrets:allData.secrets.length,
       subdomains:allData.subdomains.length, corsVulns:allData.corsResults.filter(r=>r.vulnerable).length,
@@ -1226,7 +1240,7 @@ async function scanApiDocs() {
 }
 
 // ─── Custom Payloads ─────────────────────────────────────────
-const CUSTOM_PAYLOADS_STORAGE_KEY="reconhawk_custom_payloads";
+const CUSTOM_PAYLOADS_STORAGE_KEY="bountyscope_custom_payloads";
 
 async function loadCustomPayloads() {
   try {

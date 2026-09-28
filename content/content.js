@@ -1,428 +1,214 @@
-// ============================================================
-// ReconHawk Pro - Content Script v4.1
-// FIXED: WebSocket real monitoring, scope-aware scanning,
-//        better source map handling, POST body capture
-// ============================================================
-(function() {
-  if (window.__reconHawkInjected) return;
-  window.__reconHawkInjected = true;
+// BountyScope — content script (ISOLATED world, document_start).
+// 1) Relays MAIN-world page_spy events to the background (D1 fix — the old tools
+//    lost all fetch/XHR/WS data here).
+// 2) DOM recon: anchors, forms (+ shadow DOM), data attributes, HTML comments,
+//    cookie names, window config objects, reflections, inline & external JS.
+// All items are pre-filtered client-side (same-site only) and re-checked against
+// the real target scope by the background.
+(() => {
+  if (window.__bountyScopeContent) return;
+  window.__bountyScopeContent = true;
 
-  const SECRET_PATTERNS = [
-    { name:"AWS Access Key",   regex:/AKIA[0-9A-Z]{16}/g,                              risk:"CRITICAL" },
-    { name:"AWS Secret Key",   regex:/aws.{0,20}['"\s=:][0-9a-zA-Z\/+]{40}/gi,        risk:"CRITICAL" },
-    { name:"Google API Key",   regex:/AIza[0-9A-Za-z\-_]{35}/g,                       risk:"HIGH" },
-    { name:"GitHub Token",     regex:/gh[pousr]_[0-9a-zA-Z]{36}/g,                    risk:"CRITICAL" },
-    { name:"JWT Token",        regex:/eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}/g, risk:"HIGH" },
-    { name:"Bearer Token",     regex:/bearer\s+[a-zA-Z0-9\-._~+\/]{20,}/gi,           risk:"HIGH" },
-    { name:"Private Key",      regex:/-----BEGIN\s*(RSA|EC|DSA)?\s*PRIVATE KEY-----/g, risk:"CRITICAL" },
-    { name:"Slack Token",      regex:/xox[baprs]-[0-9a-zA-Z]{10,}/g,                  risk:"HIGH" },
-    { name:"Stripe Secret",    regex:/sk_(live|test)_[0-9a-zA-Z]{24,}/g,              risk:"CRITICAL" },
-    { name:"Stripe Public",    regex:/pk_(live|test)_[0-9a-zA-Z]{24,}/g,              risk:"MEDIUM" },
-    { name:"Firebase URL",     regex:/https:\/\/[a-z0-9-]+\.firebaseio\.com/g,        risk:"MEDIUM" },
-    { name:"API Key Generic",  regex:/['"]api[_-]?key['"]\s*[:=]\s*['"][a-zA-Z0-9\-_]{16,}['"]/gi, risk:"HIGH" },
-    { name:"Password in Code", regex:/['"]password['"]\s*[:=]\s*['"][^'"]{6,}['"]/gi, risk:"HIGH" },
-    { name:"Secret in Code",   regex:/['"]secret['"]\s*[:=]\s*['"][^'"]{8,}['"]/gi,   risk:"HIGH" },
-    { name:"Auth Token",       regex:/['"]auth[_-]?token['"]\s*[:=]\s*['"][a-zA-Z0-9\-_]{16,}['"]/gi, risk:"HIGH" },
-    { name:"DB MongoDB",       regex:/mongodb(\+srv)?:\/\/[^\s'"<>]+/gi,               risk:"CRITICAL" },
-    { name:"DB SQL",           regex:/(mysql|postgresql|postgres):\/\/[^\s'"<>]+/gi,   risk:"CRITICAL" },
-    { name:"SendGrid Key",     regex:/SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/g,    risk:"HIGH" },
-  ];
+  const send = (type, extra) => {
+    try { chrome.runtime.sendMessage(Object.assign({ type }, extra)).catch(() => {}); } catch (_) {}
+  };
 
-  const ENDPOINT_PATTERNS = [
-    /['"`](\/[a-zA-Z0-9_\-\/\.]{2,100})['"`]/g,
-    /['"`](https?:\/\/[^\s'"<>{}|\\^`\[\]]{5,200})['"`]/g,
-    /fetch\s*\(\s*['"`]([^'"`]+)['"`]/g,
-    /axios\s*\.\s*(?:get|post|put|delete|patch)\s*\(\s*['"`]([^'"`]+)['"`]/g,
-    /url\s*[:=]\s*['"`]([^'"`\s]{4,200})['"`]/gi,
-    /endpoint\s*[:=]\s*['"`]([^'"`\s]{4,200})['"`]/gi,
-  ];
+  // ── D1 relay: page_spy (MAIN world) → background ──────────────────────────
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data || e.data.source !== 'bountyscope-spy' || !e.data.type) return;
+    send(e.data.type, e.data.payload || {});
+  });
 
-  const foundSecrets = [], foundEndpoints = [], foundParams = [], foundSubdomains = [];
-
-  // ── Get base domain ───────────────────────────────────────
+  // ── Client-side pre-filter ────────────────────────────────────────────────
   function getBaseDomain() {
+    try { const p = location.hostname.split('.'); return p.slice(-2).join('.'); }
+    catch (_) { return location.hostname; }
+  }
+  function sameSite(url) {
     try {
-      const parts = window.location.hostname.split(".");
-      return parts.slice(-2).join(".");
-    } catch(_) { return window.location.hostname; }
+      const h = new URL(url, location.href).hostname.toLowerCase();
+      const b = getBaseDomain();
+      return h === b || h.endsWith('.' + b);
+    } catch (_) { return false; }
   }
 
-  // ── Check if URL is same scope as current page ────────────
-  function isSameScope(url) {
-    try {
-      const base = getBaseDomain();
-      const host = new URL(url).hostname.toLowerCase();
-      return host === base || host.endsWith("." + base);
-    } catch(_) { return true; } // relative URLs are always in scope
-  }
+  const INTERESTING_DATA = /^data-(?:id|src|url|token|key|auth|api|endpoint|path|redirect|user|player|team|game|season|league|config|json|payload)$/i;
+  const INTERESTING_COOKIE = /^(?:session|token|auth|jwt|csrf|login|user|account|access|refresh|sid)/i;
+  const WINDOW_TARGETS = [
+    '__NEXT_DATA__', '__NEXT_PUBLIC__', '__INITIAL_STATE__', '__REDUX_STATE__',
+    '__APOLLO_STATE__', '__RELAY_STORE__', '__APP_CONFIG__', '__ENV__',
+    '__NUXT__', '__APP_DATA__', 'siteConfig', 'appConfig', '__data', '__state',
+  ];
 
-  function buildSubdomainRegex(base) {
-    const escaped = base.replace(/\./g, "\\.");
-    return new RegExp(`(?:https?://)?([a-zA-Z0-9][a-zA-Z0-9\\-]*\\.${escaped})`, "gi");
-  }
-
-  function scanSource(source, sourceUrl) {
-    const base = getBaseDomain();
-    const subRe = buildSubdomainRegex(base);
-
-    // Secrets
-    SECRET_PATTERNS.forEach(({ name, regex, risk }) => {
-      let m; regex.lastIndex=0;
-      while ((m=regex.exec(source))!==null) {
-        const val = m[0].substring(0,150);
-        if (!foundSecrets.find(s=>s.value===val))
-          foundSecrets.push({ name, value:val, risk, source:sourceUrl });
-      }
-    });
-
-    // Endpoints - only same-scope absolute URLs
-    ENDPOINT_PATTERNS.forEach(regex => {
-      let m; regex.lastIndex=0;
-      while ((m=regex.exec(source))!==null) {
-        const ep = m[1]||m[2];
-        if (!ep || ep.length<=2 || ep.length>=300) continue;
-        if (ep.startsWith("http") && !isSameScope(ep)) continue; // skip out-of-scope absolute URLs
-        if (!foundEndpoints.find(e=>e.path===ep))
-          foundEndpoints.push({ _key:ep, path:ep, method:"DISCOVERED", url:ep.startsWith("http")?ep:sourceUrl, type:ep.startsWith("http")?"EXTERNAL":"INTERNAL" });
-      }
-    });
-
-    // Params from URL patterns
-    const paramRe = /[?&]([a-zA-Z_][a-zA-Z0-9_\-]{0,50})=/g;
-    let pm; paramRe.lastIndex=0;
-    while ((pm=paramRe.exec(source))!==null) {
-      const p = pm[1];
-      if (p && p.length>1 && !foundParams.find(x=>x.key===p&&x.source==="JS"))
-        foundParams.push({ key:p, value:"", source:"JS", url:sourceUrl });
-    }
-
-    // Subdomains
-    let sm; subRe.lastIndex=0;
-    while ((sm=subRe.exec(source))!==null) {
-      const host = sm[1].toLowerCase();
-      if (host !== window.location.hostname && !foundSubdomains.find(x=>x.host===host))
-        foundSubdomains.push({ host, source:sourceUrl, discovered: new Date().toISOString() });
-    }
-  }
-
-  function scanDOM() {
-    document.querySelectorAll("form").forEach(form => {
-      const action = form.getAttribute("action") || window.location.href;
-      const method = (form.getAttribute("method")||"GET").toUpperCase();
-      // Only include forms that submit to in-scope targets
-      let actionUrl = action;
+  // ── Scanners (raw items; background classifies + scopes + dedupes) ────────
+  function scanAnchors(params, endpoints) {
+    document.querySelectorAll('a[href]').forEach((a) => {
       try {
-        actionUrl = new URL(action, window.location.href).href;
-      } catch(_) {}
-      form.querySelectorAll("input,select,textarea").forEach(inp => {
-        const name = inp.getAttribute("name");
-        if (name && !foundParams.find(p=>p.key===name&&p.source==="FORM"))
-          foundParams.push({ key:name, value:inp.value||"", source:"FORM", url:actionUrl, method });
-      });
-    });
-
-    document.querySelectorAll("a[href]").forEach(a => {
-      try {
-        const url = new URL(a.href, window.location.href);
-        // Only index same-scope links
-        if (!isSameScope(url.href) && url.hostname !== window.location.hostname) return;
-        url.searchParams.forEach((value,key) => {
-          if (!foundParams.find(p=>p.key===key&&p.source==="LINK"))
-            foundParams.push({ key, value, source:"LINK", url:a.href });
+        const u = new URL(a.href, location.href);
+        if (!sameSite(u.href)) return;
+        u.searchParams.forEach((val, key) => {
+          if (key) params.push({ key, value: val.slice(0, 300), source: 'LINK', url: u.href, method: 'GET' });
         });
-        if (url.pathname && url.pathname.length>1 && !foundEndpoints.find(e=>e.path===url.pathname))
-          foundEndpoints.push({ _key:url.pathname, path:url.pathname, method:"GET", url:a.href, type:"LINK" });
-      } catch(_) {}
-    });
-
-    document.querySelectorAll("script:not([src])").forEach(s => {
-      if (s.textContent) scanSource(s.textContent, window.location.href+"[inline]");
-    });
-  }
-
-  // ── Source Map Parser ─────────────────────────────────────
-  async function parseSourceMaps(scriptUrl) {
-    try {
-      const resp = await fetch(scriptUrl, { cache:"force-cache" });
-      if (!resp.ok) return;
-      const text = await resp.text();
-
-      const mapMatch = text.match(/\/\/[#@]\s*sourceMappingURL=(.+)$/m);
-      if (!mapMatch) return;
-
-      let mapUrl = mapMatch[1].trim();
-      if (mapUrl.startsWith("data:")) return;
-      if (!mapUrl.startsWith("http")) {
-        mapUrl = new URL(mapUrl, scriptUrl).href;
-      }
-
-      const mapResp = await fetch(mapUrl, { cache:"force-cache" });
-      if (!mapResp.ok) return;
-
-      let mapData;
-      try {
-        mapData = await mapResp.json();
-      } catch(e) {
-        return; // Invalid JSON in source map
-      }
-
-      if (mapData.sources && Array.isArray(mapData.sources)) {
-        mapData.sources.forEach(src => {
-          if (!src) return;
-          const path = src.replace(/^webpack:\/\/\/|^\.\//, "");
-          if (path.match(/\.(js|ts|vue|jsx|tsx)$/) && path.length < 200) {
-            if (!foundEndpoints.find(e=>e.path===path))
-              foundEndpoints.push({ _key:path, path, method:"SOURCEMAP", url:mapUrl, type:"JS", note:"From source map" });
-          }
-        });
-      }
-
-      if (mapData.sourcesContent && Array.isArray(mapData.sourcesContent)) {
-        mapData.sourcesContent.forEach((content, i) => {
-          if (content && typeof content === "string") {
-            scanSource(content, (mapData.sources&&mapData.sources[i]) || mapUrl);
-          }
-        });
-      }
-    } catch(e) {
-      // Silently fail but don't block other scans
-    }
-  }
-
-  async function scanExternalScripts() {
-    const scripts = Array.from(document.querySelectorAll("script[src]")).slice(0,25);
-    for (const script of scripts) {
-      try {
-        // Only scan same-scope scripts
-        if (!isSameScope(script.src)) continue;
-
-        const resp = await fetch(script.src, { cache:"force-cache" });
-        if (resp.ok) {
-          const ct = resp.headers.get("content-type")||"";
-          if (ct.includes("javascript")||ct.includes("text/plain")||script.src.endsWith(".js")) {
-            const text = await resp.text();
-            scanSource(text, script.src);
-          }
+        if (u.pathname && u.pathname.length > 1) {
+          endpoints.push({ path: u.pathname, url: u.href, method: 'GET' });
         }
-        await parseSourceMaps(script.src);
-      } catch(_) {}
+      } catch (_) {}
+    });
+  }
+
+  function collectForms(root, params) {
+    root.querySelectorAll('input, select, textarea').forEach((el) => {
+      const name = el.name || el.id || el.getAttribute('data-name');
+      if (!name || String(name).length < 2) return;
+      let actionUrl = location.href;
+      const form = el.closest('form');
+      if (form) {
+        try { actionUrl = new URL(form.getAttribute('action') || location.href, location.href).href; } catch (_) {}
+      }
+      const method = ((form && form.getAttribute('method')) || 'GET').toUpperCase();
+      params.push({
+        key: name,
+        value: String(el.value || el.getAttribute('placeholder') || '').slice(0, 300),
+        source: 'FORM', url: actionUrl, method,
+      });
+    });
+  }
+
+  function scanForms(params) {
+    collectForms(document, params);
+    document.querySelectorAll('*').forEach((el) => {
+      if (el.shadowRoot) { try { collectForms(el.shadowRoot, params); } catch (_) {} }
+    });
+  }
+
+  function scanDataAttrs(params) {
+    document.querySelectorAll('[data-id],[data-src],[data-url],[data-token],[data-key],[data-auth],[data-api],[data-endpoint],[data-path],[data-redirect],[data-user],[data-player],[data-team],[data-game],[data-season],[data-league],[data-config]').forEach((el) => {
+      [...el.attributes].forEach((attr) => {
+        if (!INTERESTING_DATA.test(attr.name)) return;
+        const val = attr.value;
+        if (!val || val.length < 2 || val.length > 300) return;
+        params.push({ key: attr.name.replace('data-', ''), value: val, source: 'data_attribute', url: location.href, method: 'GET' });
+      });
+    });
+  }
+
+  function scanComments(secrets) {
+    const walker = document.createTreeWalker(document, NodeFilter.SHOW_COMMENT);
+    let node;
+    const kvRe = /(?:api[_-]?key|token|secret|password|auth)\s*[=:]\s*([^\s"'<>]{8,100})/gi;
+    while ((node = walker.nextNode())) {
+      const text = node.textContent || '';
+      if (text.length < 10) continue;
+      kvRe.lastIndex = 0;
+      let m;
+      while ((m = kvRe.exec(text)) !== null) {
+        secrets.push({
+          name: 'Secret in HTML Comment', risk: 'MEDIUM',
+          value: m[1].slice(0, 200), context: text.slice(0, 300),
+          source: location.href,
+        });
+      }
     }
   }
 
-  // ── WebSocket Real Monitoring ─────────────────────────────
-  function hookWebSocket() {
-    const OrigWebSocket = window.WebSocket;
-    if (!OrigWebSocket || window.__reconHawkWSHooked) return;
-    window.__reconHawkWSHooked = true;
-
-    window.WebSocket = function(url, protocols) {
-      const ws = protocols ? new OrigWebSocket(url, protocols) : new OrigWebSocket(url);
-      const connInfo = {
-        url: url,
-        protocol: typeof protocols === "string" ? protocols : (Array.isArray(protocols) ? protocols.join(",") : ""),
-        status: "CONNECTING",
-        messageCount: 0,
-        sentCount: 0,
-        receivedCount: 0,
-        messages: [],
-        timestamp: Date.now()
-      };
-
-      ws.addEventListener("open", () => {
-        connInfo.status = "OPEN";
-        sendWSUpdate(connInfo);
+  function scanCookieNames(secrets) {
+    document.cookie.split(';').forEach((c) => {
+      const name = c.split('=')[0].trim();
+      if (!name || !INTERESTING_COOKIE.test(name)) return;
+      secrets.push({
+        name: 'Interesting Cookie Name', risk: 'MEDIUM',
+        value: name, context: 'Cookie found: ' + name, source: location.href,
       });
+    });
+  }
 
-      ws.addEventListener("close", () => {
-        connInfo.status = "CLOSED";
-        sendWSUpdate(connInfo);
-      });
+  function scanWindowConfig(params) {
+    WINDOW_TARGETS.forEach((key) => {
+      try {
+        let obj = window;
+        key.split('.').forEach((k) => { obj = obj?.[k]; });
+        if (!obj || typeof obj !== 'object') return;
+        JSON.stringify(obj).match(/"([^"]+)"\s*:\s*"([^"]{4,200})"/g)?.slice(0, 40).forEach((kv) => {
+          const [, k, v] = kv.match(/"([^"]+)"\s*:\s*"([^"]+)"/) || [];
+          if (k && v) params.push({ key: k, value: v.slice(0, 300), source: 'window_config', url: location.href, method: 'GET' });
+        });
+      } catch (_) {}
+    });
+  }
 
-      ws.addEventListener("error", () => {
-        connInfo.status = "ERROR";
-        sendWSUpdate(connInfo);
-      });
-
-      ws.addEventListener("message", (evt) => {
-        connInfo.receivedCount++;
-        connInfo.messageCount++;
-        if (connInfo.messages.length < 20) {
-          connInfo.messages.push({
-            direction: "IN",
-            data: typeof evt.data === "string" ? evt.data.substring(0, 200) : "[binary]",
-            timestamp: Date.now()
+  function testReflections() {
+    const refs = [];
+    try {
+      const u = new URL(location.href);
+      const body = document.body?.innerHTML || '';
+      u.searchParams.forEach((val, name) => {
+        if (!val || val.length < 6) return;
+        if (body.includes(val)) {
+          refs.push({
+            param: name, url: location.href, payloadType: 'DOM-REFLECT', status: '—',
+            reflected: true, timestamp: Date.now(),
           });
         }
-        sendWSUpdate(connInfo);
       });
-
-      // Intercept send
-      const origSend = ws.send.bind(ws);
-      ws.send = function(data) {
-        connInfo.sentCount++;
-        connInfo.messageCount++;
-        if (connInfo.messages.length < 20) {
-          connInfo.messages.push({
-            direction: "OUT",
-            data: typeof data === "string" ? data.substring(0, 200) : "[binary]",
-            timestamp: Date.now()
-          });
-        }
-        sendWSUpdate(connInfo);
-        return origSend(data);
-      };
-
-      return ws;
-    };
-
-    // Copy static properties
-    Object.keys(OrigWebSocket).forEach(k => {
-      try { window.WebSocket[k] = OrigWebSocket[k]; } catch(_) {}
-    });
-    window.WebSocket.prototype = OrigWebSocket.prototype;
-    window.WebSocket.CONNECTING = OrigWebSocket.CONNECTING;
-    window.WebSocket.OPEN = OrigWebSocket.OPEN;
-    window.WebSocket.CLOSING = OrigWebSocket.CLOSING;
-    window.WebSocket.CLOSED = OrigWebSocket.CLOSED;
+    } catch (_) {}
+    return refs;
   }
 
-  function sendWSUpdate(connInfo) {
-    chrome.runtime.sendMessage({
-      type: "ADD_WEBSOCKET",
-      tabId: -1,
-      connection: {
-        url: connInfo.url,
-        protocol: connInfo.protocol,
-        status: connInfo.status,
-        messageCount: connInfo.messageCount,
-        sentCount: connInfo.sentCount,
-        receivedCount: connInfo.receivedCount,
-        messages: connInfo.messages,
-        timestamp: connInfo.timestamp
-      }
-    }).catch(()=>{});
-  }
-
-  // ── Intercept fetch for POST body capture ─────────────────
-  function hookFetch() {
-    const origFetch = window.fetch;
-    if (!origFetch || window.__reconHawkFetchHooked) return;
-    window.__reconHawkFetchHooked = true;
-
-    window.fetch = function(input, init) {
+  function collectScriptUrls() {
+    const urls = [];
+    document.querySelectorAll('script[src]').forEach((s) => {
       try {
-        const url = typeof input === "string" ? input : input?.url || "";
-        const method = (init?.method || "GET").toUpperCase();
-        if (method === "POST" || method === "PUT" || method === "PATCH") {
-          const body = init?.body;
-          if (body && typeof body === "string") {
-            // Try to extract params from body
-            try {
-              // JSON body
-              const json = JSON.parse(body);
-              Object.entries(json).forEach(([key, value]) => {
-                chrome.runtime.sendMessage({
-                  type: "ADD_PARAMS", tabId: -1,
-                  params: [{ key, value: String(value).substring(0,100), source: "POST-JSON", url }]
-                }).catch(()=>{});
-              });
-            } catch(_) {
-              // Form-encoded body
-              try {
-                const sp = new URLSearchParams(body);
-                const params = [];
-                sp.forEach((value, key) => {
-                  params.push({ key, value: value.substring(0,100), source: "POST-FORM", url });
-                });
-                if (params.length) {
-                  chrome.runtime.sendMessage({ type: "ADD_PARAMS", tabId: -1, params }).catch(()=>{});
-                }
-              } catch(_) {}
-            }
-          }
-        }
-      } catch(_) {}
-      return origFetch.apply(this, arguments);
-    };
+        const abs = new URL(s.src, location.href).href;
+        if (sameSite(abs) && !urls.includes(abs)) urls.push(abs);
+      } catch (_) {}
+    });
+    return urls.slice(0, 25);
   }
 
-  // ── XMLHttpRequest body capture ───────────────────────────
-  function hookXHR() {
-    const origOpen = XMLHttpRequest.prototype.open;
-    const origSend = XMLHttpRequest.prototype.send;
-    if (window.__reconHawkXHRHooked) return;
-    window.__reconHawkXHRHooked = true;
+  function runScan() {
+    const params = [];
+    const endpoints = [];
+    const secrets = [];
+    scanAnchors(params, endpoints);
+    scanForms(params);
+    scanDataAttrs(params);
+    scanWindowConfig(params);
+    scanComments(secrets);
+    scanCookieNames(secrets);
 
-    XMLHttpRequest.prototype.open = function(method, url) {
-      this._reconMethod = method;
-      this._reconUrl = url;
-      return origOpen.apply(this, arguments);
-    };
+    if (params.length) send('ADD_PARAMS', { params });
+    if (endpoints.length) send('ADD_ENDPOINTS', { endpoints });
+    if (secrets.length) send('ADD_SECRETS', { secrets });
+    testReflections().forEach((r) => send('ADD_PAYLOAD_RESULT', { result: r }));
 
-    XMLHttpRequest.prototype.send = function(body) {
-      if (body && (this._reconMethod === "POST" || this._reconMethod === "PUT")) {
-        try {
-          const url = this._reconUrl || "";
-          if (typeof body === "string") {
-            try {
-              const json = JSON.parse(body);
-              const params = Object.entries(json).map(([key, value]) => ({
-                key, value: String(value).substring(0,100), source: "XHR-JSON", url
-              }));
-              if (params.length) chrome.runtime.sendMessage({ type:"ADD_PARAMS", tabId:-1, params }).catch(()=>{});
-            } catch(_) {
-              try {
-                const sp = new URLSearchParams(body);
-                const params = [];
-                sp.forEach((v,k) => params.push({ key:k, value:v.substring(0,100), source:"XHR-FORM", url }));
-                if (params.length) chrome.runtime.sendMessage({ type:"ADD_PARAMS", tabId:-1, params }).catch(()=>{});
-              } catch(_) {}
-            }
-          }
-        } catch(_) {}
+    // Inline scripts → background analysis (secret + endpoint extraction)
+    let inline = 0;
+    document.querySelectorAll('script:not([src])').forEach((s) => {
+      const code = s.textContent || '';
+      if (code.length > 20 && inline < 10) {
+        inline++;
+        send('ANALYZE_JS', { code: code.slice(0, 200000), scriptUrl: location.href + '[inline]' });
       }
-      return origSend.apply(this, arguments);
-    };
+    });
+
+    // External in-scope scripts → background fetch + analyze + source maps (D7)
+    const urls = collectScriptUrls();
+    if (urls.length) send('SCAN_SCRIPTS', { urls });
+
+    return { params: params.length, endpoints: endpoints.length, secrets: secrets.length };
   }
 
-  async function runScan() {
-    // Hook early
-    hookWebSocket();
-    hookFetch();
-    hookXHR();
-
-    scanDOM();
-    await scanExternalScripts();
-
-    if (foundSecrets.length)
-      chrome.runtime.sendMessage({ type:"ADD_SECRETS", tabId:-1, secrets:foundSecrets }).catch(()=>{});
-    if (foundParams.length)
-      chrome.runtime.sendMessage({ type:"ADD_PARAMS", tabId:-1, params:foundParams }).catch(()=>{});
-    if (foundEndpoints.length)
-      chrome.runtime.sendMessage({ type:"ADD_ENDPOINTS", tabId:-1, endpoints:foundEndpoints }).catch(()=>{});
-    if (foundSubdomains.length)
-      chrome.runtime.sendMessage({ type:"ADD_SUBDOMAINS", tabId:-1, subdomains:foundSubdomains }).catch(()=>{});
-
-    return {
-      secrets:foundSecrets.length,
-      params:foundParams.length,
-      endpoints:foundEndpoints.length,
-      subdomains:foundSubdomains.length
-    };
-  }
-
-  // Hook WebSocket immediately (before page scripts run connections)
-  hookWebSocket();
-  hookFetch();
-  hookXHR();
-
-  if (document.readyState==="loading") document.addEventListener("DOMContentLoaded", runScan);
-  else runScan();
-
-  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg.type==="SCAN_NOW") {
-      runScan().then(counts => sendResponse({ ok:true, ...counts }));
+  chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
+    if (msg && msg.type === 'SCAN_NOW') {
+      const counts = runScan();
+      respond(Object.assign({ ok: true }, counts));
       return true;
     }
   });
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => runScan(), { once: true });
+  } else {
+    runScan();
+  }
 })();

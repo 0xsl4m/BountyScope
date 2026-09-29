@@ -132,17 +132,17 @@ async function runProbeJob(job, timeout) {
 
     // ── SSTI: math evaluation detection ────────────────────────────────────
     if (vtype === 'SSTI') {
-      const has77inResp     = /\b77\b/.test(respBody);
-      const has77inBaseline = /\b77\b/.test(baselineBody);
-      const has49inResp     = /\b49\b/.test(respBody);
-      const has49inBaseline = /\b49\b/.test(baselineBody);
-      if ((has77inResp && !has77inBaseline) || (has49inResp && !has49inBaseline)) {
-        const evalNum = has77inResp && !has77inBaseline ? '77' : '49';
-        reportFinding(param, vtype, payload, {
-          evidence: 'Template expression evaluated: ' + payload + ' → "' + evalNum + '" appeared in response (not in baseline)',
-          status, url: resp.finalUrl || url, type: 'evaluated',
-        });
-        return;
+      // Sound detection only: the evaluated RESULT ({{8*9}}→72, {{7*7}}→49) must
+      // appear in the response but not the baseline. The payload's own digits
+      // never contain the result, so plain reflection cannot false-positive.
+      for (const [evalNum, re] of [['72', /\b72\b/], ['49', /\b49\b/]]) {
+        if (re.test(respBody) && !re.test(baselineBody)) {
+          reportFinding(param, vtype, payload, {
+            evidence: 'Template expression evaluated: ' + payload + ' → "' + evalNum + '" appeared in response (not in baseline)',
+            status, url: resp.finalUrl || url, type: 'evaluated',
+          });
+          return;
+        }
       }
       for (const sig of BS_DETECT.SSTI.slice(2)) {
         if (sig.test(respBody) && !sig.test(baselineBody)) {
@@ -174,8 +174,8 @@ async function runProbeJob(job, timeout) {
       const safePayload = payload.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       if (looksHtml && new RegExp(safePayload, 'i').test(respBody) && !new RegExp(safePayload, 'i').test(baselineBody)) {
         reportFinding(param, vtype, payload, {
-          evidence: 'Payload reflected verbatim in response (check browser rendering)',
-          status, url: resp.finalUrl || url, type: 'reflected_verbatim',
+          evidence: 'Payload reflected verbatim in HTML response — reflection OBSERVED, not confirmed execution (check context/encoding/CSP manually)',
+          status, url: resp.finalUrl || url, type: 'reflected_observed', severity: 'LOW',
         });
         return;
       }

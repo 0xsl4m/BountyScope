@@ -15,6 +15,33 @@ chrome.runtime.onInstalled.addListener(() => {
   store.initSettings().then((s) => scope.setExtraOOS(s.oosExtra || []));
 });
 
+// Browser restart: tab IDs reset and can collide with persisted tab:* keys —
+// sweep them so a fresh tab can never inherit a previous session's target or
+// findings (live tabs re-populate on demand).
+chrome.runtime.onStartup.addListener(() => {
+  (async () => {
+    try {
+      const all = await chrome.storage.local.get(null);
+      const stale = Object.keys(all).filter((k) => k.startsWith('tab:'));
+      if (stale.length) await chrome.storage.local.remove(stale);
+    } catch (_) {}
+  })();
+});
+
+// ─── Offscreen scanner runtime ───────────────────────────────────────────────
+const OFFSCREEN_URL = 'offscreen.html';
+async function ensureOffscreen() {
+  try {
+    await chrome.offscreen.createDocument({
+      url: OFFSCREEN_URL,
+      reasons: ['DOM_PARSER'],
+      justification: 'Runs the BountyScope active scanner engine so scans survive popup focus changes.',
+    });
+  } catch (e) {
+    if (!String(e).includes('already exist')) throw e; // single-document error = fine
+  }
+}
+
 // Restore settings cache + extra OOS list on every SW wake.
 store.getSettings().then((s) => scope.setExtraOOS(s.oosExtra || []));
 
@@ -76,6 +103,7 @@ async function route(msg, tabId, sender) {
       // Custom payloads are global settings — serve them identically in every tab
       // (the per-tab copy desynced fresh tabs from the fuzzer's behavior).
       out.customPayloads = (await store.getSettings()).customPayloads || [];
+      out.scanProgress = tab ? (tab.scanProgress || null) : null;
       return out;
     }
 
@@ -259,6 +287,37 @@ async function route(msg, tabId, sender) {
       const tab = await store.ensure(tabId);
       tab.customPayloads = payloads;
       store.markDirty(tabId);
+      return { ok: true };
+    }
+
+    case 'SCAN_START': {
+      // Delegate the scan to the offscreen document — it survives popup close.
+      await ensureOffscreen();
+      await store.ensure(tabId);
+      chrome.runtime.sendMessage({
+        target: 'bountyscope-offscreen', type: 'SCAN_START',
+        tabId, params: msg.params || [], options: msg.options || {},
+      }).catch(() => {});
+      return { ok: true };
+    }
+
+    case 'SCAN_STOP':
+      chrome.runtime.sendMessage({ target: 'bountyscope-offscreen', type: 'SCAN_STOP' }).catch(() => {});
+      return { ok: true };
+
+    case 'SCAN_PROGRESS': {
+      const tab = await store.ensure(tabId);
+      if (tab) { tab.scanProgress = Object.assign({}, msg.progress || {}, { finished: false }); store.markDirty(tabId); }
+      return { ok: true };
+    }
+
+    case 'SCAN_DONE': {
+      const tab = await store.ensure(tabId);
+      if (tab) {
+        tab.scanProgress = { done: msg.done, total: msg.total, count: msg.count, finished: true };
+        store.markDirty(tabId);
+      }
+      updateBadge(tabId);
       return { ok: true };
     }
 

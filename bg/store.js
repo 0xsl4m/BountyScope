@@ -78,7 +78,19 @@ export function push(tabId, collection, item, opts = {}) {
   if (opts.match && tab[collection].some((x) => opts.match(x, item))) return false;
   tab[collection].push(item);
   const cap = CAPS[collection];
-  if (cap && tab[collection].length > cap) tab[collection].splice(0, tab[collection].length - cap);
+  if (cap && tab[collection].length > cap) {
+    if (collection === 'params') {
+      // Evict the lowest-scored item, not the oldest — a hostile in-scope page
+      // spamming junk params cannot flush the researcher's real captures.
+      let minI = 0;
+      for (let i = 1; i < tab[collection].length; i++) {
+        if ((tab[collection][i].score || 0) < (tab[collection][minI].score || 0)) minI = i;
+      }
+      tab[collection].splice(minI, 1);
+    } else {
+      tab[collection].splice(0, tab[collection].length - cap);
+    }
+  }
   markDirty(tabId);
   return true;
 }

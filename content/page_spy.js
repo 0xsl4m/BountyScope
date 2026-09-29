@@ -154,4 +154,13 @@
   Object.setPrototypeOf(WebSocketShim, OrigWS); // inherit statics (CONNECTING, OPEN, …)
   WebSocketShim.prototype = OrigWS.prototype;   // instanceof keeps working
   window.WebSocket = WebSocketShim;
+
+  // ── SPA route-change signal ────────────────────────────────────────────────
+  // Only the MAIN world sees the page's history object — patching pushState in
+  // the isolated content world never intercepts the page's own navigations.
+  try {
+    const _push = history.pushState, _replace = history.replaceState;
+    history.pushState = function () { const r = _push.apply(this, arguments); send('BS_RESCAN', {}); return r; };
+    history.replaceState = function () { const r = _replace.apply(this, arguments); send('BS_RESCAN', {}); return r; };
+  } catch (_) {}
 })();

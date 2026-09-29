@@ -10,7 +10,8 @@
     "activeTab",
     "scripting",
     "webRequest",
-    "alarms"
+    "alarms",
+    "offscreen"
   ],
   "host_permissions": [
     "<all_urls>"

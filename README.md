@@ -33,9 +33,12 @@ nuclei / curl / CSV / Markdown / JSON.
 - Data reported by **in-scope pages** (DOM/network observation) is trusted as in-scope
   observation. On wildcard scopes that include user-generated-content hosts, treat
   findings as leads, not ground truth.
-- "Confirmed" means: reflection found in HTML responses only, boolean SQLi verified
-  across 3 consecutive rounds, time-based SQLi double-confirmed, signature matches
-  excluded against a per-request baseline. Always manually verify before reporting.
+- "Confirmed" means: reflection found in HTML responses only (verbatim echoes are
+  reported as unconfirmed leads), boolean SQLi verified across 3 consecutive rounds,
+  time-based SQLi double-confirmed, signature matches excluded against a per-request
+  baseline. Always manually verify before reporting.
+- Active scans run in an **offscreen document** — closing the popup does not stop
+  them; reopen it to watch live progress.
 
 ## Install (load unpacked)
 

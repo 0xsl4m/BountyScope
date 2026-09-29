@@ -93,7 +93,7 @@ const BS_DETECT = {
   ],
 
   SSTI: [
-    /\b77\b/,
+    /\b72\b/,
     /\b49\b/,
     /<class 'type'>/,
     /\[object Object\]/,

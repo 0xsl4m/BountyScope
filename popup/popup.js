@@ -147,7 +147,10 @@ function initEventListeners() {
     document.getElementById("decodeJwtBtn")?.addEventListener("click", decodeJWT);
     document.getElementById("scanApiDocsBtn")?.addEventListener("click", scanApiDocs);
     document.getElementById("runScanBtn")?.addEventListener("click", startActiveScan);
-    document.getElementById("stopScanBtn")?.addEventListener("click", () => { stopActiveScan(); setStatus("Scan stopping…"); });
+    document.getElementById("stopScanBtn")?.addEventListener("click", async () => {
+      await chrome.runtime.sendMessage({ type:"SCAN_STOP" }).catch(()=>{});
+      setStatus("Scan stopping…");
+    });
 
     // Export actions (delegated — buttons live in static HTML)
     document.addEventListener("click", e => {
@@ -205,6 +208,7 @@ async function loadData() {
       lastDataVersion = resp.dataVersion;
       allData = resp;
       updateTargetUI(); updateNoScopeWarning();
+      updateScanProgressUI();
       if (changed) { renderActive(); updateCounts(); }
     }
   } catch(_) {}
@@ -612,7 +616,7 @@ function renderParams() {
 function renderEndpoints() {
   const q=getSearch(), epType=getFilter("fEpType"), method=getFilter("fMethod");
   const seen=new Set();
-  let items=allData.endpoints.filter(e=>{ if(seen.has(e.path)) return false; seen.add(e.path); return true; });
+  let items=allData.endpoints.filter(e=>{ const k=(e.host||"")+(e.path||e.url||""); if(seen.has(k)) return false; seen.add(k); return true; });
   if(q) items=items.filter(e=>
     (e.path+"").toLowerCase().includes(q) ||
     (e.url+"").toLowerCase().includes(q) ||
@@ -952,7 +956,7 @@ function renderApiDocs() {
 // ─── Auto Test ───────────────────────────────────────────────
 async function startAutoTest() {
   if (!allData.target?.host) { openModal(); setStatus("Active testing needs an Exact/Wildcard target (No-Filter is passive-only)"); return; }
-  const highParams=scopeFilterParams(allData.params.filter(p=>paramRisk(p.key)==="HIGH"&&p.url));
+  const highParams=scopeFilterParams(allData.params.filter(p=>paramRisk(p.key)==="HIGH"&&p.url&&QUERY_SOURCES.includes(p.source)));
   if (!highParams.length) { setStatus("No HIGH risk params. Scan first."); return; }
   const btn=document.getElementById("autoTestBtn");
   btn.disabled=true; btn.classList.add("running"); btn.textContent="🤖 Testing...";
@@ -982,7 +986,7 @@ async function startAutoTest() {
 // ─── Fuzzer ──────────────────────────────────────────────────
 async function startFuzzer() {
   if (!allData.target?.host) { openModal(); setStatus("Active testing needs an Exact/Wildcard target (No-Filter is passive-only)"); return; }
-  const params=scopeFilterParams(allData.params.filter(p=>p.url));
+  const params=scopeFilterParams(allData.params.filter(p=>p.url&&QUERY_SOURCES.includes(p.source)));
   if (!params.length) { setStatus("No in-scope params to fuzz. Scan first."); return; }
   fuzzStop=false;
   const btn=document.getElementById("runFuzzBtn"), stopBtn=document.getElementById("stopFuzzBtn");
@@ -1058,7 +1062,7 @@ async function startIdorScan() {
   if (!allData.target?.host) { openModal(); setStatus("Active testing needs an Exact/Wildcard target (No-Filter is passive-only)"); return; }
   const idorParams=allData.params.filter(p=>{
     const k=(p.key||"").toLowerCase();
-    return p.url && isUrlInScope(p.url) && /\b(id|uid|user_?id|account_?id|post_?id|item_?id|order_?id|product_?id|doc_?id|record_?id)\b/.test(k) && /^\d+$/.test((p.value||"").trim());
+    return p.url && isUrlInScope(p.url) && QUERY_SOURCES.includes(p.source) && /\b(id|uid|user_?id|account_?id|post_?id|item_?id|order_?id|product_?id|doc_?id|record_?id)\b/.test(k) && /^\d+$/.test((p.value||"").trim());
   });
   if (!idorParams.length) { setStatus("No numeric ID params found."); return; }
   const btn=document.getElementById("runIdorBtn");
@@ -1381,6 +1385,9 @@ function isUrlInScope(url) {
   } catch(_) { return false; }
 }
 function scopeFilterParams(list) { return list.filter(p => p.url && isUrlInScope(p.url)); }
+// Sources the heuristic tools (fuzzer/auto-test/IDOR) can actually inject into via
+// query string — path/body/header params belong to the evidence scanner.
+const QUERY_SOURCES = ["url_parameter","anchor_href","LINK","hash_parameter"];
 
 // ─── Active scanner (engine lives in scanner/scan.js) ────────────────────────
 async function startActiveScan() {
@@ -1414,38 +1421,50 @@ async function startActiveScan() {
   const estMin = Math.max(1, Math.round(nTests * delay / Math.max(concurrency,1) / 60000));
   if (!confirm("Active scan → "+(allData.target.wildcard?"*."+allData.target.host:allData.target.host)+
     "\n"+toScan.length+" params, ~"+nTests+" requests (≈"+estMin+" min).\n\n"+
-    "⚠ Keep this popup OPEN — closing it stops the scan (findings so far are already saved).\n\n"+
+    "The scan runs in a background runtime — you can close this popup and reopen it later to watch progress.\n\n"+
     "Only run this against targets you are authorized to test.")) return;
 
   const btn=document.getElementById("runScanBtn"), stopBtn=document.getElementById("stopScanBtn");
   btn.disabled=true; btn.classList.add("running");
   stopBtn.style.display="flex";
   const wrap=document.getElementById("scanProgressWrap"); if (wrap) wrap.style.display="block";
-  setStatus("Active scan started…");
+  setStatus("Active scan dispatched to background runtime…");
 
-  await runActiveScan(toScan, { types, delay, timeout:9000, concurrency, canary, smartMode: typesSel==="all", extraPayloads }, {
-    onProgress(info) {
-      const pct = info.total ? Math.round((info.done/info.total)*100) : 0;
-      const bar=document.getElementById("scanBar"); if (bar) bar.style.width=pct+"%";
-      const msg=document.getElementById("scanMsg"); if (msg) msg.textContent=info.message||"Scanning…";
-      const cnt=document.getElementById("scanCount"); if (cnt) cnt.textContent=info.done+"/"+info.total;
-    },
-    onResult(finding) {
-      (allData.scanResults = allData.scanResults||[]).push(finding);
-      chrome.runtime.sendMessage({ type:"ADD_SCAN_RESULT", tabId:currentTabId, result:finding }).catch(()=>{});
-      renderScanner(); updateCounts();
-      setStatus("⚠ CONFIRMED: "+finding.type+" on "+finding.param);
-    },
-    onDone(info) {
-      btn.disabled=false; btn.classList.remove("running");
-      stopBtn.style.display="none";
-      const bar=document.getElementById("scanBar");
-      if (bar) { bar.style.width="100%"; setTimeout(()=>{ bar.style.width="0%"; },800); }
-      const msg=document.getElementById("scanMsg"); if (msg) msg.textContent="Scan complete";
-      setStatus("✓ Scan done — "+info.results.length+" confirmed finding(s) out of "+info.done+" tests");
-      loadData();
-    },
-  });
+  const r = await chrome.runtime.sendMessage({ type:"SCAN_START", tabId:currentTabId, params:toScan,
+    options:{ types, delay, timeout:9000, concurrency, canary, smartMode: typesSel==="all", extraPayloads } });
+  if (!r?.ok) {
+    btn.disabled=false; btn.classList.remove("running"); stopBtn.style.display="none";
+    setStatus("Scan failed to start: "+(r?.error||"unknown error"));
+  }
+}
+
+// Progress is persisted by the background (SCAN_PROGRESS/SCAN_DONE from the
+// offscreen runtime bump dataVersion), so this UI survives popup close/reopen.
+function updateScanProgressUI() {
+  const p = allData.scanProgress;
+  const wrap = document.getElementById("scanProgressWrap");
+  const btn = document.getElementById("runScanBtn");
+  const stopBtn = document.getElementById("stopScanBtn");
+  if (!wrap) return;
+  if (!p) {
+    if (btn) { btn.disabled=false; btn.classList.remove("running"); }
+    if (stopBtn) stopBtn.style.display="none";
+    return;
+  }
+  wrap.style.display="block";
+  const pct = p.total ? Math.round((p.done/p.total)*100) : 0;
+  const bar=document.getElementById("scanBar"); if (bar) bar.style.width=pct+"%";
+  const msg=document.getElementById("scanMsg"); if (msg) msg.textContent=p.finished?"Scan complete":(p.message||"Scanning…");
+  const cnt=document.getElementById("scanCount"); if (cnt) cnt.textContent=(p.done||0)+"/"+(p.total||0);
+  if (p.finished) {
+    if (btn) { btn.disabled=false; btn.classList.remove("running"); }
+    if (stopBtn) stopBtn.style.display="none";
+    setStatus("✓ Scan finished — "+(p.count||0)+" confirmed finding(s) out of "+(p.done||0)+" tests");
+    setTimeout(() => { const w=document.getElementById("scanProgressWrap"); if (w) w.style.display="none"; }, 4000);
+  } else {
+    if (btn) { btn.disabled=true; btn.classList.add("running"); }
+    if (stopBtn) stopBtn.style.display="flex";
+  }
 }
 
 function renderScanner() {

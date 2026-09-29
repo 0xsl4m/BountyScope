@@ -1,6 +1,6 @@
 // BountyScope — per-target session snapshots (save / load / import / delete).
-// Sessions are trimmed harder than live tabs so 12 sessions stay well inside
-// chrome.storage.local's default quota (unlimitedStorage intentionally not used).
+// Sessions are trimmed harder than live tabs; unlimitedStorage is enabled, so
+// quota pressure can no longer silently stop persistence.
 import * as store from './store.js';
 
 const KEY = 'bountyscope_sessions';

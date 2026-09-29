@@ -18,6 +18,7 @@
   // inject arbitrary store mutations.
   window.addEventListener('message', (e) => {
     if (e.source !== window || !e.data || e.data.source !== 'bountyscope-spy' || !e.data.type) return;
+    if (e.data.type === 'BS_RESCAN') { scheduleRescan(); return; }
     if (e.data.type !== 'ADD_PARAMS' && e.data.type !== 'ADD_WEBSOCKET') return;
     send(e.data.type, e.data.payload || {});
   });
@@ -211,18 +212,17 @@
 
   // ── SPA coverage: re-scan on route changes + DOM mutations (debounced) ─────
   // One-shot DOMContentLoaded misses everything a modern SPA renders later.
+  // Budget-capped: a hostile page cannot loop us forever.
   let scanPending = false;
+  let rescanCount = 0;
   function scheduleRescan() {
-    if (scanPending) return;
+    if (scanPending || rescanCount >= 20) return;
     scanPending = true;
-    setTimeout(() => { scanPending = false; try { runScan(); } catch (_) {} }, 1500);
+    setTimeout(() => { scanPending = false; rescanCount++; try { runScan(); } catch (_) {} }, 2500);
   }
-  try {
-    const _push = history.pushState, _replace = history.replaceState;
-    history.pushState = function () { const r = _push.apply(this, arguments); scheduleRescan(); return r; };
-    history.replaceState = function () { const r = _replace.apply(this, arguments); scheduleRescan(); return r; };
-    window.addEventListener('popstate', scheduleRescan);
-  } catch (_) {}
+  // popstate is visible in this world; pushState/replaceState are patched in
+  // page_spy (MAIN world) — patching them here never sees the page's history.
+  window.addEventListener('popstate', scheduleRescan);
   try {
     const mo = new MutationObserver(() => scheduleRescan());
     if (document.readyState === 'loading') {

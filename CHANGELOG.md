@@ -30,3 +30,12 @@ scope-first extension.
   reflection findings, per-host endpoint dedupe, timestamped passive-session keys,
   unlimitedStorage for reliable persistence, scan-duration warning in the
   confirmation dialog, trust & privacy docs.
+- Opus independent review fixes: SSTI detector made sound (8*9→72 asymmetric math —
+  the old {{77}} check false-positived on plain reflection), scanner relocated to an
+  offscreen document (scans survive popup close; progress persisted and resumable in
+  the popup), onStartup sweep of stale tab:* keys after browser restart, score-based
+  param eviction (hostile in-scope pages can no longer flush genuine captures),
+  SPA route-change signal moved to the MAIN-world spy (isolated-world history patch
+  was inert), rescans budget-capped, fuzzer/auto-test/IDOR restricted to query-string
+  injectable params, per-host endpoint dedupe in the UI, verbatim XSS reflection
+  downgraded to unconfirmed lead.

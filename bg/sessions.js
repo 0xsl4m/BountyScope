@@ -73,6 +73,7 @@ export async function remove(host) {
 }
 
 export async function importSession(tabId, host, session) {
+  host = String(host || '').slice(0, 200); // storage-key clamp
   if (!session || typeof session !== 'object') return false;
   if (!session.target && !Array.isArray(session.params) && !Array.isArray(session.endpoints)) return false;
   const t = session.target && typeof session.target === 'object' ? session.target : null;

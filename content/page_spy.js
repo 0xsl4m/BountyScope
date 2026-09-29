@@ -96,8 +96,14 @@
   const OrigWS = window.WebSocket;
   function WebSocketShim(url, protocols) {
     const ws = protocols !== undefined ? new OrigWS(url, protocols) : new OrigWS(url);
+    // Resolve relative WS URLs ("/ws" is valid per spec) to absolute ws(s):// so
+    // the background scope check can see the host.
+    const wsUrl = (() => {
+      try { return new URL(url, location.href).href.replace(/^http/i, 'ws'); }
+      catch (_) { return String(url); }
+    })();
     const info = {
-      url: String(url),
+      url: wsUrl,
       protocol: typeof protocols === 'string' ? protocols : (Array.isArray(protocols) ? protocols.join(',') : ''),
       status: 'CONNECTING', messageCount: 0, sentCount: 0, receivedCount: 0,
       messages: [], timestamp: Date.now(),
@@ -114,13 +120,12 @@
     ws.addEventListener('error', () => { info.status = 'ERROR'; report(); });
     ws.addEventListener('message', (e) => {
       info.receivedCount++; info.messageCount++;
-      if (info.messages.length < 50) {
-        info.messages.push({
-          direction: 'IN',
-          data: typeof e.data === 'string' ? e.data.substring(0, 200) : '[binary]',
-          timestamp: Date.now(),
-        });
-      }
+      if (info.messages.length >= 50) info.messages.shift(); // keep the LAST 50
+      info.messages.push({
+        direction: 'IN',
+        data: typeof e.data === 'string' ? e.data.substring(0, 200) : '[binary]',
+        timestamp: Date.now(),
+      });
       report();
       if (typeof e.data === 'string') {
         const ps = extractFromBody(e.data, info.url, 'WS', 'WS', 'WS');
@@ -130,13 +135,12 @@
     const origSend = ws.send.bind(ws);
     ws.send = function (data) {
       info.sentCount++; info.messageCount++;
-      if (info.messages.length < 50) {
-        info.messages.push({
-          direction: 'OUT',
-          data: typeof data === 'string' ? data.substring(0, 200) : '[binary]',
-          timestamp: Date.now(),
-        });
-      }
+      if (info.messages.length >= 50) info.messages.shift(); // keep the LAST 50
+      info.messages.push({
+        direction: 'OUT',
+        data: typeof data === 'string' ? data.substring(0, 200) : '[binary]',
+        timestamp: Date.now(),
+      });
       report();
       if (typeof data === 'string') {
         const ps = extractFromBody(data, info.url, 'WS', 'WS', 'WS');

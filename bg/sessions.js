@@ -29,7 +29,9 @@ export async function saveSession(tabId) {
     const arr = tab[c] || [];
     snap[c] = TRIMS[c] ? arr.slice(0, TRIMS[c]) : arr.slice();
   }
-  all[t.noFilter ? '__all__' : t.host] = snap;
+  // Timestamped key for passive-only sessions — a single '__all__' key silently
+  // overwrote every previous no-filter snapshot.
+  all[t.noFilter ? '__all__@' + new Date(snap.savedAt).toISOString().replace(/[:.]/g, '-') : t.host] = snap;
   const keys = Object.keys(all);
   if (keys.length > MAX_SESSIONS) {
     keys.sort((a, b) => (all[a].savedAt || 0) - (all[b].savedAt || 0));

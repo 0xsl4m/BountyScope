@@ -56,17 +56,29 @@ async function runActiveScan(params, options, callbacks) {
       vulnTypes = effective;
     }
 
+    // Rebuild POST/GraphQL bodies with captured sibling fields so single-field
+    // injection keeps the rest of the original request intact.
+    const bodyCtx = {};
+    if (/json|graphql/i.test(param.source || '')) {
+      for (const p2 of params) {
+        if (p2 && p2.url === param.url && p2.source === param.source && p2.name) {
+          bodyCtx[p2.name] = String(p2.value || '');
+        }
+      }
+    }
+
     for (const vtype of vulnTypes) {
       if (!BS_PAYLOADS[vtype]) continue;
-      for (const payload of BS_PAYLOADS[vtype]) {
+      const extra = (options.extraPayloads && options.extraPayloads[vtype]) || [];
+      for (const payload of [...BS_PAYLOADS[vtype], ...extra]) {
         if (payload && typeof payload === 'object' && payload.a) {
-          _queue.push({ param, vtype, payload, mode: 'boolean' });
+          _queue.push({ param, vtype, payload, mode: 'boolean', bodyCtx });
         } else if (vtype === 'SQLi_TIME') {
-          _queue.push({ param, vtype, payload: String(payload), mode: 'time' });
+          _queue.push({ param, vtype, payload: String(payload), mode: 'time', bodyCtx });
         } else if (vtype === 'Blind_XSS') {
-          _queue.push({ param, vtype, payload: String(payload).replace(/CANARY/g, canary), mode: 'probe', canary });
+          _queue.push({ param, vtype, payload: String(payload).replace(/CANARY/g, canary), mode: 'probe', canary, bodyCtx });
         } else {
-          _queue.push({ param, vtype, payload: String(payload), mode: 'probe' });
+          _queue.push({ param, vtype, payload: String(payload), mode: 'probe', bodyCtx });
         }
       }
     }
@@ -103,15 +115,15 @@ async function runWorker(delay, timeout) {
 
 // ── Job runners ──────────────────────────────────────────────────────────────
 async function runProbeJob(job, timeout) {
-  const { param, vtype, payload } = job;
+  const { param, vtype, payload, bodyCtx } = job;
   try {
     const origValue = param.value || '1';
-    const { url: baseUrl, body: baseBody, method: baseMethod } = buildRequest(param, origValue);
+    const { url: baseUrl, body: baseBody, method: baseMethod } = buildRequest(param, origValue, bodyCtx);
     const baselineResp = await makeRequest(baseUrl, baseMethod, baseBody, timeout);
     if (!baselineResp) return;
     const baselineBody = baselineResp.body;
 
-    const { url, body, method, injectHeader } = buildRequest(param, payload);
+    const { url, body, method, injectHeader } = buildRequest(param, payload, bodyCtx);
     const resp = await makeRequest(url, method, body, timeout, injectHeader);
     if (!resp) return;
 
@@ -146,7 +158,11 @@ async function runProbeJob(job, timeout) {
 
     // ── XSS ────────────────────────────────────────────────────────────────
     if (vtype === 'XSS') {
-      for (const sig of BS_DETECT.XSS_REFLECT) {
+      // Reflection only counts in HTML responses — a JSON/XML API echoing the
+      // payload verbatim is not XSS (the old code marked any echo CONFIRMED).
+      const ct = resp.contentType || '';
+      const looksHtml = /text\/html|application\/xhtml/i.test(ct) || ct === '';
+      if (looksHtml) for (const sig of BS_DETECT.XSS_REFLECT) {
         if (sig.test(respBody) && !sig.test(baselineBody)) {
           reportFinding(param, vtype, payload, {
             evidence: 'Unescaped HTML tag reflected: ' + extractEvidence(respBody, sig),
@@ -156,7 +172,7 @@ async function runProbeJob(job, timeout) {
         }
       }
       const safePayload = payload.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      if (new RegExp(safePayload, 'i').test(respBody) && !new RegExp(safePayload, 'i').test(baselineBody)) {
+      if (looksHtml && new RegExp(safePayload, 'i').test(respBody) && !new RegExp(safePayload, 'i').test(baselineBody)) {
         reportFinding(param, vtype, payload, {
           evidence: 'Payload reflected verbatim in response (check browser rendering)',
           status, url: resp.finalUrl || url, type: 'reflected_verbatim',
@@ -234,10 +250,10 @@ async function runProbeJob(job, timeout) {
 }
 
 async function runBooleanJob(job, timeout) {
-  const { param, payload } = job;
+  const { param, payload, bodyCtx } = job;
   try {
-    const { url: urlA, body: bodyA, method } = buildRequest(param, payload.a);
-    const { url: urlB, body: bodyB } = buildRequest(param, payload.b);
+    const { url: urlA, body: bodyA, method } = buildRequest(param, payload.a, bodyCtx);
+    const { url: urlB, body: bodyB } = buildRequest(param, payload.b, bodyCtx);
     const deltas = [];
     for (let round = 0; round < 3; round++) {
       const [respA, respB] = await Promise.all([
@@ -262,11 +278,11 @@ async function runBooleanJob(job, timeout) {
 }
 
 async function runTimeJob(job, timeout) {
-  const { param, payload } = job;
+  const { param, payload, bodyCtx } = job;
   try {
     const baseTimes = [];
     for (let i = 0; i < 3; i++) {
-      const { url: bUrl, body: bBody, method: bMeth } = buildRequest(param, param.value || '1');
+      const { url: bUrl, body: bBody, method: bMeth } = buildRequest(param, param.value || '1', bodyCtx);
       const t0 = Date.now();
       await makeRequest(bUrl, bMeth, bBody, timeout);
       baseTimes.push(Date.now() - t0);
@@ -279,16 +295,24 @@ async function runTimeJob(job, timeout) {
     const expectedDelay = Math.max(SLEEP_SECONDS * 1000, 5000);
     const threshold     = baselineMax + expectedDelay - 500;
 
-    const { url, body, method } = buildRequest(param, payload);
+    const { url, body, method } = buildRequest(param, payload, bodyCtx);
     const t1 = Date.now();
     await makeRequest(url, method, body, Math.max(timeout, expectedDelay + 5000));
     const elapsed = Date.now() - t1;
 
     if (elapsed >= threshold && elapsed > baselineAvg + 3000) {
-      reportFinding(param, 'SQLi_TIME', payload, {
-        evidence: 'Response delayed ' + elapsed + 'ms (3× baseline max: ' + baselineMax + 'ms, avg: ' + Math.round(baselineAvg) + 'ms)',
-        status: 200, url, type: 'time_verified_triple', severity: 'CRITICAL',
-      });
+      // Second consecutive delayed hit required — a single slow response on a
+      // jittery target is not evidence (the old single-shot overreported).
+      await sleep(300);
+      const t2 = Date.now();
+      await makeRequest(url, method, body, Math.max(timeout, expectedDelay + 5000));
+      const elapsed2 = Date.now() - t2;
+      if (elapsed2 >= threshold && elapsed2 > baselineAvg + 3000) {
+        reportFinding(param, 'SQLi_TIME', payload, {
+          evidence: 'Response delayed ' + elapsed + 'ms then ' + elapsed2 + 'ms (3× baseline max: ' + baselineMax + 'ms, avg: ' + Math.round(baselineAvg) + 'ms) — 2 consecutive delayed hits',
+          status: 200, url, type: 'time_verified_double', severity: 'CRITICAL',
+        });
+      }
     }
   } catch (_) {}
 }
@@ -300,11 +324,40 @@ function extractSleepSeconds(payload) {
 }
 
 // ── Request builder ──────────────────────────────────────────────────────────
-function buildRequest(param, payload) {
+function buildRequest(param, payload, bodyCtx) {
   const src    = param.source || 'url_parameter';
   const method = (param.method || 'GET').toUpperCase();
 
-  if (['url_parameter', 'anchor_href', 'LINK', 'hash_parameter', 'path_segment'].includes(src)) {
+  // Path-segment injection: substitute the actual segment the param was derived
+  // from — query-string injection never reaches a path-based sink.
+  if (src === 'path_segment') {
+    try {
+      const u = new URL(param.url);
+      const orig = String(param.value || '');
+      const segs = u.pathname.split('/');
+      let idx = -1;
+      for (let i = 1; i < segs.length; i++) {
+        let dec = segs[i];
+        try { dec = decodeURIComponent(segs[i]); } catch (_) {}
+        if (dec === orig) { idx = i; break; }
+      }
+      if (idx > 0) {
+        segs[idx] = encodeURIComponent(payload);
+        u.pathname = segs.join('/');
+        return { url: u.href, body: null, method: 'GET' };
+      }
+    } catch (_) {}
+    // Fallback: cannot locate the segment — fall back to query-string injection.
+    try {
+      const u = new URL(param.url);
+      u.searchParams.set(param.name || param.key, payload);
+      return { url: u.href, body: null, method: 'GET' };
+    } catch (_) {
+      return { url: param.url, body: null, method: 'GET' };
+    }
+  }
+
+  if (['url_parameter', 'anchor_href', 'LINK', 'hash_parameter'].includes(src)) {
     try {
       const u = new URL(param.url);
       u.searchParams.set(param.name || param.key, payload);
@@ -319,8 +372,21 @@ function buildRequest(param, payload) {
     return { url: param.url, body: fd.toString(), method: 'POST' };
   }
   if (src === 'post_json' || src === 'POST-JSON' || src === 'XHR-JSON' || src === 'graphql') {
-    const obj = {};
-    obj[param.name || param.key] = payload;
+    const ctx = bodyCtx || {};
+    if (src === 'graphql') {
+      // Rebuild a valid GraphQL request: keep the captured query, reconstruct
+      // variables from captured var.* fields with the target field replaced.
+      const variables = {};
+      for (const [k, v] of Object.entries(ctx)) {
+        if (k === 'gql_query' || k === 'gql_operation' || !k.startsWith('var.')) continue;
+        setPath(variables, k.slice(4).split('.'), k === param.name ? payload : v);
+      }
+      const body = { query: ctx.gql_query || 'query { __typename }', variables };
+      const opName = param.name === 'gql_operation' ? payload : ctx.gql_operation;
+      if (opName) body.operationName = opName;
+      return { url: param.url, body: JSON.stringify(body), method: 'POST' };
+    }
+    const obj = Object.assign({}, ctx, { [param.name || param.key]: payload });
     return { url: param.url, body: JSON.stringify(obj), method: 'POST' };
   }
   if (src === 'xml_body') {
@@ -374,6 +440,7 @@ async function makeRequest(url, method, body, timeout, injectHeader) {
     return {
       status: resp.status,
       body: text,
+      contentType: resp.headers.get('content-type') || '',
       finalUrl: resp.url || url,
       redirectedTo,
       headers: resp.headers,
@@ -471,6 +538,17 @@ function extractEvidence(body, sig) {
 function payloadHostOf(p) {
   const m = String(p || '').match(/(?:https?:)?\/\/+([^\\\/'"?]+)/i);
   return m ? m[1].replace(/%2F/i, '') : null;
+}
+
+// Assign a value at a dotted path inside a nested object ("a.b" → obj.a.b)
+function setPath(obj, keys, value) {
+  let cur = obj;
+  for (let i = 0; i < keys.length - 1; i++) {
+    const k = String(keys[i]).replace(/\[\d+\]$/, '');
+    if (typeof cur[k] !== 'object' || cur[k] === null) cur[k] = {};
+    cur = cur[k];
+  }
+  cur[String(keys[keys.length - 1]).replace(/\[\d+\]$/, '')] = value;
 }
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }

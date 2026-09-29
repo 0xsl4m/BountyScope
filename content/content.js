@@ -209,6 +209,29 @@
     }
   });
 
+  // ── SPA coverage: re-scan on route changes + DOM mutations (debounced) ─────
+  // One-shot DOMContentLoaded misses everything a modern SPA renders later.
+  let scanPending = false;
+  function scheduleRescan() {
+    if (scanPending) return;
+    scanPending = true;
+    setTimeout(() => { scanPending = false; try { runScan(); } catch (_) {} }, 1500);
+  }
+  try {
+    const _push = history.pushState, _replace = history.replaceState;
+    history.pushState = function () { const r = _push.apply(this, arguments); scheduleRescan(); return r; };
+    history.replaceState = function () { const r = _replace.apply(this, arguments); scheduleRescan(); return r; };
+    window.addEventListener('popstate', scheduleRescan);
+  } catch (_) {}
+  try {
+    const mo = new MutationObserver(() => scheduleRescan());
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => mo.observe(document.documentElement, { childList: true, subtree: true }), { once: true });
+    } else {
+      mo.observe(document.documentElement, { childList: true, subtree: true });
+    }
+  } catch (_) {}
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => runScan(), { once: true });
   } else {

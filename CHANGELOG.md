@@ -23,3 +23,10 @@ scope-first extension.
   Exact/Wildcard target.
 - P6: export suite — Markdown / JSON / CSV / Burp XML / sqlmap / ffuf / nuclei /
   cURL / URL list (+HIGH variants) and confirmed-vuln report, direct downloads.
+- P7 (context-aware design review fixes): popup resized to Chrome's 800×600 limit,
+  custom payloads served globally and injected into the scanner, SPA route-change
+  recon (pushState/replaceState/MutationObserver), path-segment + GraphQL/JSON body
+  reconstruction for injection tests, double-confirmed time-based SQLi, HTML-gated
+  reflection findings, per-host endpoint dedupe, timestamped passive-session keys,
+  unlimitedStorage for reliable persistence, scan-duration warning in the
+  confirmation dialog, trust & privacy docs.

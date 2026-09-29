@@ -73,6 +73,9 @@ async function route(msg, tabId, sender) {
       const tab = await store.ensure(tabId);
       const out = { ok: true, dataVersion: tab ? (tab.dataVersion || 0) : 0, target: tab ? (tab.target || null) : null };
       for (const c of store.COLLECTIONS) out[c] = tab ? tab[c] : [];
+      // Custom payloads are global settings — serve them identically in every tab
+      // (the per-tab copy desynced fresh tabs from the fuzzer's behavior).
+      out.customPayloads = (await store.getSettings()).customPayloads || [];
       return out;
     }
 
@@ -151,6 +154,9 @@ async function route(msg, tabId, sender) {
         }
         let path = raw.path || '';
         let host = raw.host || '';
+        if (!host && /^https?:/i.test(url)) {
+          try { host = new URL(url).hostname; } catch (_) {}
+        }
         if (!path && /^https?:/i.test(url)) {
           try { const u = new URL(url); path = u.pathname; host = u.hostname; } catch (_) { path = url; }
         }
@@ -163,7 +169,8 @@ async function route(msg, tabId, sender) {
           type: raw.type || classifyEndpoint(path),
         };
         store.push(tabId, 'endpoints', item, {
-          match: (x, n) => x._key === n._key || x.path === n.path,
+          // _key only — same path on two in-scope hosts must NOT collapse.
+          match: (x, n) => x._key === n._key,
         });
       }
       updateBadge(tabId);

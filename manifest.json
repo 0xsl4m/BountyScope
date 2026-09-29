@@ -5,6 +5,7 @@
   "description": "Scope-first web reconnaissance & vulnerability scanner for bug bounty hunters",
   "permissions": [
     "storage",
+    "unlimitedStorage",
     "tabs",
     "activeTab",
     "scripting",

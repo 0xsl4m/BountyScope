@@ -19,12 +19,23 @@ permission to test.
 **Active testing** (explicit scope required, conservative defaults):
 - Evidence-based vulnerability scanner: SQLi (error / boolean / time), XSS, Blind XSS,
   LFI, RFI, RCE/OS command, SSTI, SSRF, XXE, Open Redirect
-- Every finding requires concrete evidence (baseline comparison + multi-round
-  verification) — no noise, exploit hints included
+- Every finding requires concrete evidence — baseline comparison, 3-round boolean
+  confirmation, double-confirmed time-based SQLi, reflection gated to HTML responses
 - Lightweight fuzzer, IDOR probe, GraphQL introspection, API-doc discovery
 
 **Workflow**: per-tab sessions, save/restore/import, export to Burp / sqlmap / ffuf /
 nuclei / curl / CSV / Markdown / JSON.
+
+## Trust & privacy
+
+- **All data stays local** — no telemetry; the only network traffic is to the targets
+  you scan (and your Blind XSS collector, if you configure one).
+- Data reported by **in-scope pages** (DOM/network observation) is trusted as in-scope
+  observation. On wildcard scopes that include user-generated-content hosts, treat
+  findings as leads, not ground truth.
+- "Confirmed" means: reflection found in HTML responses only, boolean SQLi verified
+  across 3 consecutive rounds, time-based SQLi double-confirmed, signature matches
+  excluded against a per-request baseline. Always manually verify before reporting.
 
 ## Install (load unpacked)
 

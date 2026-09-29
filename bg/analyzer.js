@@ -86,7 +86,7 @@ export async function ingestFindings(tabId, findings, sourceUrl) {
     store.push(tabId, 'endpoints', {
       _key: (host || '') + path, path, method: 'DISCOVERED', url: full, host,
       type: classifyEndpoint(path),
-    }, { match: (x, n) => x._key === n._key || x.path === n.path });
+    }, { match: (x, n) => x._key === n._key });
   }
   for (const s of findings.secrets) {
     if (s.source && /^https?:/i.test(s.source) && !(await scope.isInScope(s.source, tabId))) continue;

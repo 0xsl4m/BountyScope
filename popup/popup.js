@@ -396,7 +396,7 @@ async function handleImportFile(event) {
     }
     let targetHost = data.target?.host || data.target?.raw || "";
     if (!targetHost && file.name) {
-      const match = file.name.match(/recon_([^_]+)_/);
+      const match = file.name.match(/(?:bountyscope|recon)[-_]([^_\-.]+)/);
       if (match) targetHost = match[1];
     }
     const sessionData = {
@@ -672,7 +672,7 @@ function renderReflect() {
   showTable("reflect",items.length>0); if(!items.length) return;
   document.getElementById("body-reflect").innerHTML=items.map(r=>{
     const res=r.reflected?"b-critical":"b-ok", txt=r.reflected?"⚠ REFLECTED":"OK";
-    const pt=r.payloadType==="sqli"?"b-critical":"b-high";
+    const pt=r.payloadType==="DOM-REFLECT"?"b-info":r.payloadType==="sqli"?"b-critical":"b-high";
     return `<tr>
       <td class="accent">${highlight(r.param,q)}</td>
       <td><span class="badge ${pt}">${esc((r.payloadType||"").toUpperCase())}</span></td>
@@ -1403,8 +1403,19 @@ async function startActiveScan() {
   const concurrency = Math.min(Math.max(parseInt(document.getElementById("scanThreads")?.value)||2,1),8);
   const nTests = toScan.length * types.reduce((a,t)=>a+(BS_PAYLOADS[t]?.length||0),0);
 
+  // Custom payloads feed the scanner too (mapped to the closest engine type)
+  const typeMap = { sqli:"SQLi_ERROR", xss:"XSS", lfi:"LFI", ssrf:"SSRF", ssti:"SSTI", rce:"OS_CMD" };
+  const extraPayloads = {};
+  (allData.customPayloads||[]).forEach(cp => {
+    const t = typeMap[String(cp.type||"").toLowerCase()];
+    if (t && cp.payload) (extraPayloads[t] = extraPayloads[t] || []).push(String(cp.payload));
+  });
+
+  const estMin = Math.max(1, Math.round(nTests * delay / Math.max(concurrency,1) / 60000));
   if (!confirm("Active scan → "+(allData.target.wildcard?"*."+allData.target.host:allData.target.host)+
-    "\n"+toScan.length+" params, ~"+nTests+" requests.\n\nOnly run this against targets you are authorized to test.")) return;
+    "\n"+toScan.length+" params, ~"+nTests+" requests (≈"+estMin+" min).\n\n"+
+    "⚠ Keep this popup OPEN — closing it stops the scan (findings so far are already saved).\n\n"+
+    "Only run this against targets you are authorized to test.")) return;
 
   const btn=document.getElementById("runScanBtn"), stopBtn=document.getElementById("stopScanBtn");
   btn.disabled=true; btn.classList.add("running");
@@ -1412,7 +1423,7 @@ async function startActiveScan() {
   const wrap=document.getElementById("scanProgressWrap"); if (wrap) wrap.style.display="block";
   setStatus("Active scan started…");
 
-  await runActiveScan(toScan, { types, delay, timeout:9000, concurrency, canary, smartMode: typesSel==="all" }, {
+  await runActiveScan(toScan, { types, delay, timeout:9000, concurrency, canary, smartMode: typesSel==="all", extraPayloads }, {
     onProgress(info) {
       const pct = info.total ? Math.round((info.done/info.total)*100) : 0;
       const bar=document.getElementById("scanBar"); if (bar) bar.style.width=pct+"%";

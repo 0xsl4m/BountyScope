@@ -75,8 +75,11 @@ export async function remove(host) {
 export async function importSession(tabId, host, session) {
   if (!session || typeof session !== 'object') return false;
   if (!session.target && !Array.isArray(session.params) && !Array.isArray(session.endpoints)) return false;
+  const t = session.target && typeof session.target === 'object' ? session.target : null;
   const snap = {
-    target: session.target || { host: host || '', wildcard: false, noFilter: false, raw: host || '' },
+    target: t
+      ? { host: String(t.host || '').slice(0, 200), wildcard: !!t.wildcard, noFilter: !!t.noFilter, raw: String(t.raw || '').slice(0, 200) }
+      : { host: host || '', wildcard: false, noFilter: false, raw: host || '' },
     savedAt: session.savedAt || Date.now(),
   };
   for (const c of store.COLLECTIONS) {

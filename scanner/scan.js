@@ -46,7 +46,15 @@ async function runActiveScan(params, options, callbacks) {
     const src = param.source || '';
     // Not real HTTP injection points — skip
     if (['js_analysis', 'window_config', 'data_attribute', 'cookie', 'html_comment'].includes(src)) continue;
-    const vulnTypes = options.smartMode ? relevantTypes(param).filter((t) => effective.includes(t)) : effective;
+    let vulnTypes;
+    if (options.smartMode) {
+      const base = relevantTypes(param).filter((t) => effective.includes(t));
+      // Param-agnostic types always apply: boolean/time SQLi (and blind XSS
+      // whenever a canary is configured — effective already gates it).
+      vulnTypes = [...new Set([...base, 'SQLi_BOOLEAN', 'SQLi_TIME', ...(effective.includes('Blind_XSS') ? ['Blind_XSS'] : [])])];
+    } else {
+      vulnTypes = effective;
+    }
 
     for (const vtype of vulnTypes) {
       if (!BS_PAYLOADS[vtype]) continue;

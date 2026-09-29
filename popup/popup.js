@@ -721,7 +721,7 @@ function renderHeaders() {
   else if(status==="ok")  items=items.filter(h=>h.present);
   showTable("headers",items.length>0); if(!items.length) return;
   document.getElementById("body-headers").innerHTML=items.map(h=>{
-    const rc=h.risk==="OK"?"b-ok":"b-"+(h.risk||"info").toLowerCase();
+    const rc=h.risk==="OK"?"b-ok":"b-"+safeCls(h.risk||"info");
     const val=h.present?(h.value||"").substring(0,70):"⚠ MISSING";
     return `<tr>
       <td style="font-family:'JetBrains Mono';color:var(--accent);font-size:10px">${highlight(h.header,q)}</td>
@@ -901,8 +901,9 @@ function renderCustomPayloads() {
   showTable("custom-payloads",items.length>0); if(!items.length) return;
   const typeColors={sqli:"b-critical",xss:"b-high",lfi:"b-low",ssrf:"b-info",ssti:"b-medium",rce:"b-critical",idor:"b-high"};
   document.getElementById("body-custom-payloads").innerHTML=items.map(p=>{
+    const t=safeCls(p.type);
     return `<tr>
-      <td><span class="badge ${typeColors[p.type]||"b-info"}">${esc(p.type.toUpperCase())}</span></td>
+      <td><span class="badge ${typeColors[t]||"b-info"}">${esc(t.toUpperCase())}</span></td>
       <td class="accent" style="font-family:'JetBrains Mono';font-size:10px;">${highlight(p.payload,q)}</td>
       <td class="copy-cell"><button class="cbtn" data-copy="${escAttr(p.payload)}">copy</button></td>
     </tr>`;
@@ -1475,7 +1476,7 @@ function buildExportContent(fmt) {
   if (base === 'json') {
     content  = JSON.stringify(fmt.startsWith('high_')
       ? { target: allData.target, params: highParams, endpoints, secrets, reflections }
-      : { tool: "BountyScope v1.0", target: allData.target, timestamp: new Date().toISOString(), params, endpoints, secrets, reflections },
+      : { tool: "BountyScope v1.0.0", target: allData.target, timestamp: new Date().toISOString(), params, endpoints, secrets, reflections },
       null, 2);
     filename = 'bountyscope.json'; mime = 'application/json';
 

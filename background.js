@@ -42,6 +42,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   })();
 });
 
+// Prerendered-tab swap: drop the orphaned old id (the swap-in tab starts fresh).
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+  store.dropTab(removedTabId);
+});
+
 // ─── Message router ──────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Content-script messages are pinned to their own tab — a page can never spoof
@@ -66,8 +71,8 @@ async function route(msg, tabId, sender) {
 
     case 'GET_DATA': {
       const tab = await store.ensure(tabId);
-      const out = { ok: true, dataVersion: tab.dataVersion || 0, target: tab.target || null };
-      for (const c of store.COLLECTIONS) out[c] = tab[c];
+      const out = { ok: true, dataVersion: tab ? (tab.dataVersion || 0) : 0, target: tab ? (tab.target || null) : null };
+      for (const c of store.COLLECTIONS) out[c] = tab ? tab[c] : [];
       return out;
     }
 
@@ -207,6 +212,12 @@ async function route(msg, tabId, sender) {
       };
       const result = msg.result || msg.data;
       if (!result) return { ok: true };
+      // Results relayed from content (DOM reflections) must reference an
+      // absolute in-scope URL — a page can only ever report about itself.
+      if (type === 'ADD_PAYLOAD_RESULT') {
+        const rUrl = String(result.url || '');
+        if (!/^https?:/i.test(rUrl) || !(await scope.isInScope(rUrl, tabId))) return { ok: true };
+      }
       await store.ensure(tabId);
       result.timestamp = result.timestamp || Date.now();
       const dedupe = {

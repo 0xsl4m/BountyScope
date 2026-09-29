@@ -65,7 +65,9 @@ async function onSendHeaders(d) {
     // one entry per header name, ever (ReconSpider dedupe rule)
     if (tab.params.some((p) => p.source === 'request_header' && p.key.toLowerCase() === hl)) continue;
     const p = buildParam(h.name, h.value || '', 'request_header', d.url, d.method);
-    if (p) store.push(d.tabId, 'params', p);
+    if (p) store.push(d.tabId, 'params', p, {
+      match: (x, n) => x.source === 'request_header' && x.key.toLowerCase() === String(n.key).toLowerCase(),
+    });
   }
 }
 
@@ -131,26 +133,40 @@ export function updateBadge(tabId) {
 }
 
 // WebSocket upsert — D6 fix: later reports UPDATE status/counts/messages.
+// Hardened: only in-scope ws(s):// URLs, status whitelisted, messages capped —
+// a hostile page could otherwise spam oversized fake connections into storage.
+const WS_STATUSES = new Set(['CONNECTING', 'OPEN', 'CLOSED', 'ERROR']);
+
 export async function upsertWebSocket(tabId, conn) {
   if (!conn || !conn.url) return;
+  const url = String(conn.url).slice(0, 500);
+  if (!/^wss?:\/\//i.test(url)) return;
+  if (!(await scope.isInScope(url, tabId))) return;
   const tab = await store.ensure(tabId);
   if (!tab) return;
+  const messages = (Array.isArray(conn.messages) ? conn.messages : [])
+    .slice(-50)
+    .map((m) => ({
+      direction: m && m.direction === 'OUT' ? 'OUT' : 'IN',
+      data: String((m && m.data) || '').slice(0, 200),
+      timestamp: Number(m && m.timestamp) || Date.now(),
+    }));
+  const status = WS_STATUSES.has(conn.status) ? conn.status : 'CONNECTING';
   const arr = tab.websocketConnections;
-  const ex = arr.find((w) => w.url === conn.url);
+  const ex = arr.find((w) => w.url === url);
   if (ex) {
-    if (conn.status) ex.status = conn.status;
-    if (conn.protocol) ex.protocol = conn.protocol;
+    ex.status = status;
+    if (conn.protocol) ex.protocol = String(conn.protocol).slice(0, 100);
     if (typeof conn.messageCount === 'number') ex.messageCount = conn.messageCount;
     if (typeof conn.sentCount === 'number') ex.sentCount = conn.sentCount;
     if (typeof conn.receivedCount === 'number') ex.receivedCount = conn.receivedCount;
-    if (Array.isArray(conn.messages) && conn.messages.length) ex.messages = conn.messages;
+    if (messages.length) ex.messages = messages;
   } else {
     arr.push({
-      url: conn.url, protocol: conn.protocol || '', status: conn.status || 'CONNECTING',
+      url, protocol: String(conn.protocol || '').slice(0, 100), status,
       messageCount: conn.messageCount || 0, sentCount: conn.sentCount || 0,
       receivedCount: conn.receivedCount || 0,
-      messages: Array.isArray(conn.messages) ? conn.messages : [],
-      timestamp: conn.timestamp || Date.now(),
+      messages, timestamp: conn.timestamp || Date.now(),
     });
     if (arr.length > 100) arr.splice(0, arr.length - 100);
   }

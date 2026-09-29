@@ -152,3 +152,6 @@ const BS_DETECT = {
     /onerror=prompt\(/i,
   ],
 };
+
+// OS_CMD findings share the RCE evidence signatures (uid= output, command errors…)
+BS_DETECT.OS_CMD = BS_DETECT.RCE_CMD;
